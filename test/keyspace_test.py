@@ -11,7 +11,6 @@ from vtdb import vtgate_client
 import environment
 import tablet
 import utils
-from protocols_flavor import protocols_flavor
 
 SHARDED_KEYSPACE = 'TEST_KEYSPACE_SHARDED'
 UNSHARDED_KEYSPACE = 'TEST_KEYSPACE_UNSHARDED'
@@ -70,6 +69,7 @@ def setUpModule():
 
 
 def tearDownModule():
+  utils.required_teardown()
   if utils.options.skip_teardown:
     return
 
@@ -100,38 +100,80 @@ def tearDownModule():
 def setup_tablets():
   setup_sharded_keyspace()
   setup_unsharded_keyspace()
-  utils.VtGate().start()
+  utils.VtGate().start(tablets=[
+      shard_0_master, shard_0_replica,
+      shard_1_master, shard_1_replica,
+      unsharded_master, unsharded_replica,
+      ])
+  utils.vtgate.wait_for_endpoints(
+      '%s.%s.master' % (SHARDED_KEYSPACE, '80-'),
+      1)
+  utils.vtgate.wait_for_endpoints(
+      '%s.%s.replica' % (SHARDED_KEYSPACE, '80-'),
+      1)
+  utils.vtgate.wait_for_endpoints(
+      '%s.%s.master' % (SHARDED_KEYSPACE, '-80'),
+      1)
+  utils.vtgate.wait_for_endpoints(
+      '%s.%s.replica' % (SHARDED_KEYSPACE, '-80'),
+      1)
+  utils.vtgate.wait_for_endpoints(
+      '%s.%s.master' % (UNSHARDED_KEYSPACE, '0'),
+      1)
+  utils.vtgate.wait_for_endpoints(
+      '%s.%s.replica' % (UNSHARDED_KEYSPACE, '0'),
+      1)
 
 
 def setup_sharded_keyspace():
   utils.run_vtctl(['CreateKeyspace', SHARDED_KEYSPACE])
   utils.run_vtctl(['SetKeyspaceShardingInfo', '-force', SHARDED_KEYSPACE,
                    'keyspace_id', 'uint64'])
-  shard_0_master.init_tablet('master', keyspace=SHARDED_KEYSPACE, shard='-80')
-  shard_0_replica.init_tablet(
-      'replica', keyspace=SHARDED_KEYSPACE, shard='-80')
-  shard_1_master.init_tablet('master', keyspace=SHARDED_KEYSPACE, shard='80-')
-  shard_1_replica.init_tablet(
-      'replica', keyspace=SHARDED_KEYSPACE, shard='80-')
 
-  utils.run_vtctl(['RebuildKeyspaceGraph', SHARDED_KEYSPACE,], auto_log=True)
+  shard_0_master.init_tablet(
+      'master',
+      keyspace=SHARDED_KEYSPACE,
+      shard='-80',
+      tablet_index=0)
+  shard_0_replica.init_tablet(
+      'replica',
+      keyspace=SHARDED_KEYSPACE,
+      shard='-80',
+      tablet_index=1)
+  shard_1_master.init_tablet(
+      'master',
+      keyspace=SHARDED_KEYSPACE,
+      shard='80-',
+      tablet_index=0)
+  shard_1_replica.init_tablet(
+      'replica',
+      keyspace=SHARDED_KEYSPACE,
+      shard='80-',
+      tablet_index=1)
 
   for t in [shard_0_master, shard_0_replica, shard_1_master, shard_1_replica]:
     t.create_db('vt_test_keyspace_sharded')
     t.mquery(shard_0_master.dbname, create_vt_insert_test)
     t.start_vttablet(wait_for_state=None)
 
+  for t in [shard_0_master, shard_1_master]:
+    t.wait_for_vttablet_state('SERVING')
+  for t in [shard_0_replica, shard_1_replica]:
+    t.wait_for_vttablet_state('NOT_SERVING')
+
+  utils.run_vtctl(['InitShardMaster', '-force', '%s/-80' % SHARDED_KEYSPACE,
+                   shard_0_master.tablet_alias], auto_log=True)
+  utils.run_vtctl(['InitShardMaster', '-force', '%s/80-' % SHARDED_KEYSPACE,
+                   shard_1_master.tablet_alias], auto_log=True)
+
+  for t in [shard_0_replica, shard_1_replica]:
+    utils.wait_for_tablet_type(t.tablet_alias, 'replica')
   for t in [shard_0_master, shard_0_replica, shard_1_master, shard_1_replica]:
     t.wait_for_vttablet_state('SERVING')
 
-  utils.run_vtctl(['InitShardMaster', '%s/-80' % SHARDED_KEYSPACE,
-                   shard_0_master.tablet_alias], auto_log=True)
-  utils.run_vtctl(['InitShardMaster', '%s/80-' % SHARDED_KEYSPACE,
-                   shard_1_master.tablet_alias], auto_log=True)
-
-  utils.run_vtctl(['RebuildKeyspaceGraph', SHARDED_KEYSPACE],
-                  auto_log=True)
-
+  # rebuild to be sure we have the latest data
+  utils.run_vtctl(
+      ['RebuildKeyspaceGraph', SHARDED_KEYSPACE], auto_log=True)
   utils.check_srv_keyspace('test_nj', SHARDED_KEYSPACE,
                            'Partitions(master): -80 80-\n'
                            'Partitions(rdonly): -80 80-\n'
@@ -142,27 +184,38 @@ def setup_unsharded_keyspace():
   utils.run_vtctl(['CreateKeyspace', UNSHARDED_KEYSPACE])
   utils.run_vtctl(['SetKeyspaceShardingInfo', '-force', UNSHARDED_KEYSPACE,
                    'keyspace_id', 'uint64'])
-  unsharded_master.init_tablet(
-      'master', keyspace=UNSHARDED_KEYSPACE, shard='0')
-  unsharded_replica.init_tablet(
-      'replica', keyspace=UNSHARDED_KEYSPACE, shard='0')
 
-  utils.run_vtctl(['RebuildKeyspaceGraph', UNSHARDED_KEYSPACE,], auto_log=True)
+  unsharded_master.init_tablet(
+      'master',
+      keyspace=UNSHARDED_KEYSPACE,
+      shard='0',
+      tablet_index=0)
+  unsharded_replica.init_tablet(
+      'replica',
+      keyspace=UNSHARDED_KEYSPACE,
+      shard='0',
+      tablet_index=1)
 
   for t in [unsharded_master, unsharded_replica]:
     t.create_db('vt_test_keyspace_unsharded')
     t.mquery(unsharded_master.dbname, create_vt_insert_test)
     t.start_vttablet(wait_for_state=None)
 
+  for t in [unsharded_master]:
+    t.wait_for_vttablet_state('SERVING')
+  for t in [unsharded_replica]:
+    t.wait_for_vttablet_state('NOT_SERVING')
+
+  utils.run_vtctl(['InitShardMaster', '-force', '%s/0' % UNSHARDED_KEYSPACE,
+                   unsharded_master.tablet_alias], auto_log=True)
+
+  for t in [unsharded_replica]:
+    utils.wait_for_tablet_type(t.tablet_alias, 'replica')
   for t in [unsharded_master, unsharded_replica]:
     t.wait_for_vttablet_state('SERVING')
 
-  utils.run_vtctl(['InitShardMaster', '%s/0' % UNSHARDED_KEYSPACE,
-                   unsharded_master.tablet_alias], auto_log=True)
-
-  utils.run_vtctl(['RebuildKeyspaceGraph', UNSHARDED_KEYSPACE],
-                  auto_log=True)
-
+  # rebuild to be sure we have the right version
+  utils.run_vtctl(['RebuildKeyspaceGraph', UNSHARDED_KEYSPACE], auto_log=True)
   utils.check_srv_keyspace('test_nj', UNSHARDED_KEYSPACE,
                            'Partitions(master): -\n'
                            'Partitions(rdonly): -\n'
@@ -175,8 +228,7 @@ ALL_DB_TYPES = ['master', 'rdonly', 'replica']
 class TestKeyspace(unittest.TestCase):
 
   def _read_srv_keyspace(self, keyspace_name):
-    addr = utils.vtgate.rpc_endpoint()
-    protocol = protocols_flavor().vtgate_python_protocol()
+    protocol, addr = utils.vtgate.rpc_endpoint(python=True)
     conn = vtgate_client.connect(protocol, addr, 30.0)
     result = conn.get_srv_keyspace(keyspace_name)
     conn.close()
@@ -215,13 +267,9 @@ class TestKeyspace(unittest.TestCase):
     # Create the serving/replication entries and check that they exist,
     # so we can later check they're deleted.
     utils.run_vtctl(['RebuildKeyspaceGraph', 'test_delete_keyspace'])
-    utils.run_vtctl(['RebuildShardGraph', 'test_delete_keyspace/0'])
     utils.run_vtctl(
         ['GetShardReplication', 'test_nj', 'test_delete_keyspace/0'])
     utils.run_vtctl(['GetSrvKeyspace', 'test_nj', 'test_delete_keyspace'])
-    utils.run_vtctl(['GetSrvShard', 'test_nj', 'test_delete_keyspace/0'])
-    utils.run_vtctl(
-        ['GetEndPoints', 'test_nj', 'test_delete_keyspace/0', 'master'])
 
     # Recursive DeleteKeyspace
     utils.run_vtctl(['DeleteKeyspace', '-recursive', 'test_delete_keyspace'])
@@ -235,11 +283,6 @@ class TestKeyspace(unittest.TestCase):
         expect_fail=True)
     utils.run_vtctl(
         ['GetSrvKeyspace', 'test_nj', 'test_delete_keyspace'],
-        expect_fail=True)
-    utils.run_vtctl(
-        ['GetSrvShard', 'test_nj', 'test_delete_keyspace/0'], expect_fail=True)
-    utils.run_vtctl(
-        ['GetEndPoints', 'test_nj', 'test_delete_keyspace/0', 'master'],
         expect_fail=True)
 
   def test_remove_keyspace_cell(self):
@@ -259,26 +302,17 @@ class TestKeyspace(unittest.TestCase):
     # Create the serving/replication entries and check that they exist,
     # so we can later check they're deleted.
     utils.run_vtctl(['RebuildKeyspaceGraph', 'test_delete_keyspace'])
-    utils.run_vtctl(['RebuildShardGraph', 'test_delete_keyspace/0'])
-    utils.run_vtctl(['RebuildShardGraph', 'test_delete_keyspace/1'])
     utils.run_vtctl(
         ['GetShardReplication', 'test_nj', 'test_delete_keyspace/0'])
     utils.run_vtctl(
         ['GetShardReplication', 'test_nj', 'test_delete_keyspace/1'])
     utils.run_vtctl(['GetSrvKeyspace', 'test_nj', 'test_delete_keyspace'])
-    utils.run_vtctl(['GetSrvShard', 'test_nj', 'test_delete_keyspace/0'])
-    utils.run_vtctl(['GetSrvShard', 'test_nj', 'test_delete_keyspace/1'])
-    utils.run_vtctl(
-        ['GetEndPoints', 'test_nj', 'test_delete_keyspace/0', 'replica'])
-    utils.run_vtctl(
-        ['GetEndPoints', 'test_nj', 'test_delete_keyspace/1', 'replica'])
 
     # Just remove the shard from one cell (including tablets),
     # but leaving the global records and other cells/shards alone.
     utils.run_vtctl(
         ['RemoveShardCell', '-recursive', 'test_delete_keyspace/0', 'test_nj'])
     utils.run_vtctl(['RebuildKeyspaceGraph', 'test_delete_keyspace'])
-    utils.run_vtctl(['RebuildShardGraph', 'test_delete_keyspace/0'])
 
     utils.run_vtctl(['GetKeyspace', 'test_delete_keyspace'])
     utils.run_vtctl(['GetShard', 'test_delete_keyspace/0'])
@@ -293,19 +327,12 @@ class TestKeyspace(unittest.TestCase):
     utils.run_vtctl(
         ['GetShardReplication', 'test_nj', 'test_delete_keyspace/1'])
     utils.run_vtctl(['GetSrvKeyspace', 'test_nj', 'test_delete_keyspace'])
-    utils.run_vtctl(['GetSrvShard', 'test_nj', 'test_delete_keyspace/0'])
-    utils.run_vtctl(
-        ['GetEndPoints', 'test_nj', 'test_delete_keyspace/1', 'replica'])
-    utils.run_vtctl(
-        ['GetEndPoints', 'test_nj', 'test_delete_keyspace/0', 'replica'],
-        expect_fail=True)
 
     # Add it back to do another test.
     utils.run_vtctl(
         ['InitTablet', '-port=1234', '-keyspace=test_delete_keyspace',
          '-shard=0', 'test_nj-0000000100', 'replica'])
     utils.run_vtctl(['RebuildKeyspaceGraph', 'test_delete_keyspace'])
-    utils.run_vtctl(['RebuildShardGraph', 'test_delete_keyspace/0'])
     utils.run_vtctl(
         ['GetShardReplication', 'test_nj', 'test_delete_keyspace/0'])
 
@@ -314,8 +341,6 @@ class TestKeyspace(unittest.TestCase):
         ['RemoveKeyspaceCell', '-recursive', 'test_delete_keyspace',
          'test_nj'])
     utils.run_vtctl(['RebuildKeyspaceGraph', 'test_delete_keyspace'])
-    utils.run_vtctl(['RebuildShardGraph', 'test_delete_keyspace/0'])
-    utils.run_vtctl(['RebuildShardGraph', 'test_delete_keyspace/1'])
 
     utils.run_vtctl(
         ['GetShardReplication', 'test_ca', 'test_delete_keyspace/0'])
@@ -346,18 +371,22 @@ class TestKeyspace(unittest.TestCase):
       self.assertEqual(unsharded_ks.get_shard_names(db_type), ['0'])
 
   def test_keyspace_id_to_shard_name(self):
+    # test all keyspace_id in a sharded keyspace go to the right shard
     sharded_ks = self._read_srv_keyspace(SHARDED_KEYSPACE)
-    for _, sn in enumerate(shard_names):
+    for sn in shard_names:
       for keyspace_id in shard_kid_map[sn]:
         self.assertEqual(
             sharded_ks.keyspace_id_to_shard_name_for_db_type(keyspace_id,
                                                              'master'), sn)
+
+    # take all keyspace_ids, make sure for unsharded they stay on'0'
     unsharded_ks = self._read_srv_keyspace(UNSHARDED_KEYSPACE)
-    for keyspace_id in shard_kid_map[sn]:
-      self.assertEqual(
-          unsharded_ks.keyspace_id_to_shard_name_for_db_type(
-              keyspace_id, 'master'),
-          '0')
+    for sn in shard_names:
+      for keyspace_id in shard_kid_map[sn]:
+        self.assertEqual(
+            unsharded_ks.keyspace_id_to_shard_name_for_db_type(
+                keyspace_id, 'master'),
+            '0')
 
   def test_get_srv_keyspace_names(self):
     stdout, _ = utils.run_vtctl(['GetSrvKeyspaceNames', 'test_nj'],

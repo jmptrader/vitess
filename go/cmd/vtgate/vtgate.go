@@ -7,30 +7,30 @@ package main
 import (
 	"flag"
 	"math/rand"
+	"strings"
 	"time"
 
-	log "github.com/golang/glog"
 	"golang.org/x/net/context"
+
+	log "github.com/golang/glog"
 
 	"github.com/youtube/vitess/go/exit"
 	"github.com/youtube/vitess/go/vt/discovery"
 	"github.com/youtube/vitess/go/vt/servenv"
 	"github.com/youtube/vitess/go/vt/topo"
+	"github.com/youtube/vitess/go/vt/topo/topoproto"
 	"github.com/youtube/vitess/go/vt/vtgate"
-	"github.com/youtube/vitess/go/vt/vtgate/planbuilder"
+
+	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
 )
 
 var (
-	cell                  = flag.String("cell", "test_nj", "cell to use")
-	schemaFile            = flag.String("vschema_file", "", "JSON schema file")
-	retryDelay            = flag.Duration("retry-delay", 2*time.Millisecond, "retry delay")
-	retryCount            = flag.Int("retry-count", 2, "retry count")
-	connTimeoutTotal      = flag.Duration("conn-timeout-total", 3*time.Second, "vttablet connection timeout (total)")
-	connTimeoutPerConn    = flag.Duration("conn-timeout-per-conn", 1500*time.Millisecond, "vttablet connection timeout (per connection)")
-	connLife              = flag.Duration("conn-life", 365*24*time.Hour, "average life of vttablet connections")
-	maxInFlight           = flag.Int("max-in-flight", 0, "maximum number of calls to allow simultaneously")
-	healthCheckRetryDelay = flag.Duration("healthcheck_retry_delay", 5*time.Second, "health check retry delay")
-	testGateway           = flag.String("test_gateway", "", "additional gateway to test health check module")
+	cell                   = flag.String("cell", "test_nj", "cell to use")
+	retryCount             = flag.Int("retry-count", 2, "retry count")
+	healthCheckConnTimeout = flag.Duration("healthcheck_conn_timeout", 3*time.Second, "healthcheck connection timeout")
+	healthCheckRetryDelay  = flag.Duration("healthcheck_retry_delay", 2*time.Millisecond, "health check retry delay")
+	healthCheckTimeout     = flag.Duration("healthcheck_timeout", time.Minute, "the health check timeout period")
+	tabletTypesToWait      = flag.String("tablet_types_to_wait", "", "wait till connected for specified tablet types during Gateway initialization")
 )
 
 var resilientSrvTopoServer *vtgate.ResilientSrvTopoServer
@@ -55,34 +55,26 @@ func main() {
 	ts := topo.GetServer()
 	defer topo.CloseServers()
 
-	var schema *planbuilder.Schema
-	if *schemaFile != "" {
-		var err error
-		if schema, err = planbuilder.LoadFile(*schemaFile); err != nil {
-			log.Error(err)
-			exit.Return(1)
-		}
-		log.Infof("v3 is enabled: loaded schema from file: %v", *schemaFile)
-	} else {
-		ctx := context.Background()
-		schemaJSON, err := ts.GetVSchema(ctx)
-		if err != nil {
-			log.Warningf("Skipping v3 initialization: GetVSchema failed: %v", err)
-			goto startServer
-		}
-		schema, err = planbuilder.NewSchema([]byte(schemaJSON))
-		if err != nil {
-			log.Warningf("Skipping v3 initialization: GetVSchema failed: %v", err)
-			goto startServer
-		}
-		log.Infof("v3 is enabled: loaded schema from topo")
-	}
-
-startServer:
 	resilientSrvTopoServer = vtgate.NewResilientSrvTopoServer(ts, "ResilientSrvTopoServer")
 
-	healthCheck = discovery.NewHealthCheck(*connTimeoutTotal, *healthCheckRetryDelay)
+	healthCheck = discovery.NewHealthCheck(*healthCheckConnTimeout, *healthCheckRetryDelay, *healthCheckTimeout)
+	healthCheck.RegisterStats()
 
-	vtgate.Init(healthCheck, ts, resilientSrvTopoServer, schema, *cell, *retryDelay, *retryCount, *connTimeoutTotal, *connTimeoutPerConn, *connLife, *maxInFlight, *testGateway)
+	tabletTypes := make([]topodatapb.TabletType, 0, 1)
+	if len(*tabletTypesToWait) != 0 {
+		for _, ttStr := range strings.Split(*tabletTypesToWait, ",") {
+			tt, err := topoproto.ParseTabletType(ttStr)
+			if err != nil {
+				log.Errorf("unknown tablet type: %v", ttStr)
+				continue
+			}
+			tabletTypes = append(tabletTypes, tt)
+		}
+	}
+	vtg := vtgate.Init(context.Background(), healthCheck, ts, resilientSrvTopoServer, *cell, *retryCount, tabletTypes)
+
+	servenv.OnRun(func() {
+		addStatusParts(vtg)
+	})
 	servenv.RunDefault()
 }

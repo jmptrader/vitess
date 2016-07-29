@@ -15,8 +15,9 @@ import (
 	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
 )
 
-// CheckKeyspace tests the keyspace part of the API
-func CheckKeyspace(ctx context.Context, t *testing.T, ts topo.Impl) {
+// checkKeyspace tests the keyspace part of the API
+func checkKeyspace(t *testing.T, ts topo.Impl) {
+	ctx := context.Background()
 	keyspaces, err := ts.GetKeyspaces(ctx)
 	if err != nil {
 		t.Errorf("GetKeyspaces(empty): %v", err)
@@ -52,18 +53,17 @@ func CheckKeyspace(ctx context.Context, t *testing.T, ts topo.Impl) {
 		ShardingColumnName: "user_id",
 		ShardingColumnType: topodatapb.KeyspaceIdType_UINT64,
 		ServedFroms: []*topodatapb.Keyspace_ServedFrom{
-			&topodatapb.Keyspace_ServedFrom{
+			{
 				TabletType: topodatapb.TabletType_REPLICA,
 				Cells:      []string{"c1", "c2"},
 				Keyspace:   "test_keyspace3",
 			},
-			&topodatapb.Keyspace_ServedFrom{
+			{
 				TabletType: topodatapb.TabletType_MASTER,
 				Cells:      nil,
 				Keyspace:   "test_keyspace3",
 			},
 		},
-		SplitShardCount: 64,
 	}
 	if err := ts.CreateKeyspace(ctx, "test_keyspace2", k); err != nil {
 		t.Errorf("CreateKeyspace: %v", err)
@@ -91,7 +91,6 @@ func CheckKeyspace(ctx context.Context, t *testing.T, ts topo.Impl) {
 	}
 
 	storedK.ShardingColumnName = "other_id"
-	storedK.ShardingColumnType = topodatapb.KeyspaceIdType_BYTES
 	var newServedFroms []*topodatapb.Keyspace_ServedFrom
 	for _, ksf := range storedK.ServedFroms {
 		if ksf.TabletType == topodatapb.TabletType_MASTER {
@@ -107,6 +106,14 @@ func CheckKeyspace(ctx context.Context, t *testing.T, ts topo.Impl) {
 	if err != nil {
 		t.Fatalf("UpdateKeyspace: %v", err)
 	}
+
+	// unconditional update
+	storedK.ShardingColumnType = topodatapb.KeyspaceIdType_BYTES
+	_, err = ts.UpdateKeyspace(ctx, "test_keyspace2", storedK, -1)
+	if err != nil {
+		t.Fatalf("UpdateKeyspace(-1): %v", err)
+	}
+
 	storedK, storedVersion, err = ts.GetKeyspace(ctx, "test_keyspace2")
 	if err != nil {
 		t.Fatalf("GetKeyspace: %v", err)

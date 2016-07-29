@@ -14,6 +14,10 @@ app.factory('shards', function($resource) {
   });
 });
 
+app.factory('srv_keyspace', function($resource) {
+  return $resource('../api/srv_keyspace/:cell/:keyspace');
+});
+
 app.factory('tablets', function($resource) {
   return $resource('../api/tablets/:tablet', {}, {
       'action': {method: 'POST'}
@@ -24,14 +28,6 @@ app.factory('tabletinfo', function($resource) {
   return $resource('../api/tablets/:tablet/:info');
 });
 
-app.factory('endpoints', function($resource) {
-  return $resource('../api/endpoints/:cell/:keyspace/:shard/:tabletType');
-});
-
 app.factory('topodata', function($resource) {
   return $resource('../api/topodata/:path');
-});
-
-app.factory('vschema', function($resource) {
-  return $resource('../api/vschema/');
 });

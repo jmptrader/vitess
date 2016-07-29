@@ -42,7 +42,7 @@ func resolvePKValues(tableInfo *TableInfo, pkValues []interface{}, bindVars map[
 		if length == -1 {
 			length = len(list)
 		} else if len(list) != length {
-			return NewTabletError(ErrFail, vtrpcpb.ErrorCode_BAD_INPUT, "mismatched lengths for values %v", pkValues)
+			return NewTabletError(vtrpcpb.ErrorCode_BAD_INPUT, "mismatched lengths for values %v", pkValues)
 		}
 		return nil
 	}
@@ -93,14 +93,14 @@ func resolvePKValues(tableInfo *TableInfo, pkValues []interface{}, bindVars map[
 func resolveListArg(col *schema.TableColumn, key string, bindVars map[string]interface{}) ([]sqltypes.Value, error) {
 	val, _, err := sqlparser.FetchBindVar(key, bindVars)
 	if err != nil {
-		return nil, NewTabletError(ErrFail, vtrpcpb.ErrorCode_BAD_INPUT, "%v", err)
+		return nil, NewTabletError(vtrpcpb.ErrorCode_BAD_INPUT, "%v", err)
 	}
 	list := val.([]interface{})
 	resolved := make([]sqltypes.Value, len(list))
 	for i, v := range list {
-		sqlval, err := sqltypes.BuildValue(v)
+		sqlval, err := sqltypes.BuildConverted(col.Type, v)
 		if err != nil {
-			return nil, NewTabletError(ErrFail, vtrpcpb.ErrorCode_BAD_INPUT, "%v", err)
+			return nil, NewTabletError(vtrpcpb.ErrorCode_BAD_INPUT, "%v", err)
 		}
 		if err = validateValue(col, sqlval); err != nil {
 			return nil, err
@@ -133,23 +133,16 @@ func buildSecondaryList(tableInfo *TableInfo, pkList [][]sqltypes.Value, seconda
 }
 
 func resolveValue(col *schema.TableColumn, value interface{}, bindVars map[string]interface{}) (result sqltypes.Value, err error) {
-	switch v := value.(type) {
-	case string:
-		val, _, err := sqlparser.FetchBindVar(v, bindVars)
+	if v, ok := value.(string); ok {
+		value, _, err = sqlparser.FetchBindVar(v, bindVars)
 		if err != nil {
-			return result, NewTabletError(ErrFail, vtrpcpb.ErrorCode_BAD_INPUT, "%v", err)
+			return result, NewTabletError(vtrpcpb.ErrorCode_BAD_INPUT, "%v", err)
 		}
-		sqlval, err := sqltypes.BuildValue(val)
-		if err != nil {
-			return result, NewTabletError(ErrFail, vtrpcpb.ErrorCode_BAD_INPUT, "%v", err)
-		}
-		result = sqlval
-	case sqltypes.Value:
-		result = v
-	default:
-		return result, NewTabletError(ErrFail, vtrpcpb.ErrorCode_BAD_INPUT, "incompatible value type %v", v)
 	}
-
+	result, err = sqltypes.BuildConverted(col.Type, value)
+	if err != nil {
+		return result, NewTabletError(vtrpcpb.ErrorCode_BAD_INPUT, "%v", err)
+	}
 	if err = validateValue(col, result); err != nil {
 		return result, err
 	}
@@ -158,7 +151,7 @@ func resolveValue(col *schema.TableColumn, value interface{}, bindVars map[strin
 
 func validateRow(tableInfo *TableInfo, columnNumbers []int, row []sqltypes.Value) error {
 	if len(row) != len(columnNumbers) {
-		return NewTabletError(ErrFail, vtrpcpb.ErrorCode_BAD_INPUT, "data inconsistency %d vs %d", len(row), len(columnNumbers))
+		return NewTabletError(vtrpcpb.ErrorCode_BAD_INPUT, "data inconsistency %d vs %d", len(row), len(columnNumbers))
 	}
 	for j, value := range row {
 		if err := validateValue(&tableInfo.Columns[columnNumbers[j]], value); err != nil {
@@ -175,59 +168,14 @@ func validateValue(col *schema.TableColumn, value sqltypes.Value) error {
 	}
 	if sqltypes.IsIntegral(col.Type) {
 		if !value.IsIntegral() {
-			return NewTabletError(ErrFail, vtrpcpb.ErrorCode_BAD_INPUT, "type mismatch, expecting numeric type for %v for column: %v", value, col)
+			return NewTabletError(vtrpcpb.ErrorCode_BAD_INPUT, "type mismatch, expecting numeric type for %v for column: %v", value, col)
 		}
 	} else if col.Type == sqltypes.VarBinary {
 		if !value.IsQuoted() {
-			return NewTabletError(ErrFail, vtrpcpb.ErrorCode_BAD_INPUT, "type mismatch, expecting string type for %v for column: %v", value, col)
+			return NewTabletError(vtrpcpb.ErrorCode_BAD_INPUT, "type mismatch, expecting string type for %v for column: %v", value, col)
 		}
 	}
 	return nil
-}
-
-// getLimit resolves the rowcount or offset of the limit clause value.
-// It returns -1 if it's not set.
-func getLimit(limit interface{}, bv map[string]interface{}) (int64, error) {
-	switch lim := limit.(type) {
-	case string:
-		lookup, ok := bv[lim[1:]]
-		if !ok {
-			return -1, NewTabletError(ErrFail, vtrpcpb.ErrorCode_BAD_INPUT, "missing bind var %s", lim)
-		}
-		var newlim int64
-		switch l := lookup.(type) {
-		case int64:
-			newlim = l
-		case int32:
-			newlim = int64(l)
-		case int:
-			newlim = int64(l)
-		default:
-			return -1, NewTabletError(ErrFail, vtrpcpb.ErrorCode_BAD_INPUT, "want number type for %s, got %T", lim, lookup)
-		}
-		if newlim < 0 {
-			return -1, NewTabletError(ErrFail, vtrpcpb.ErrorCode_BAD_INPUT, "negative limit %d", newlim)
-		}
-		return newlim, nil
-	case int64:
-		return lim, nil
-	default:
-		return -1, nil
-	}
-}
-
-func buildKey(row []sqltypes.Value) (key string) {
-	buf := bytes.NewBuffer(make([]byte, 0, 32))
-	for i, pkValue := range row {
-		if pkValue.IsNull() {
-			return ""
-		}
-		pkValue.EncodeASCII(buf)
-		if i != len(row)-1 {
-			buf.WriteByte('.')
-		}
-	}
-	return buf.String()
 }
 
 func buildStreamComment(tableInfo *TableInfo, pkValueList [][]sqltypes.Value, secondaryList [][]sqltypes.Value) []byte {
@@ -235,7 +183,7 @@ func buildStreamComment(tableInfo *TableInfo, pkValueList [][]sqltypes.Value, se
 	fmt.Fprintf(buf, " /* _stream %s (", tableInfo.Name)
 	// We assume the first index exists, and is the pk
 	for _, pkName := range tableInfo.Indexes[0].Columns {
-		buf.WriteString(pkName)
+		buf.WriteString(pkName.Original())
 		buf.WriteString(" ")
 	}
 	buf.WriteString(")")
@@ -254,16 +202,6 @@ func buildPKValueList(buf *bytes.Buffer, tableInfo *TableInfo, pkValueList [][]s
 		}
 		buf.WriteString(")")
 	}
-}
-
-func applyFilter(columnNumbers []int, input []sqltypes.Value) (output []sqltypes.Value) {
-	output = make([]sqltypes.Value, len(columnNumbers))
-	for colIndex, colPointer := range columnNumbers {
-		if colPointer >= 0 {
-			output[colIndex] = input[colPointer]
-		}
-	}
-	return output
 }
 
 func applyFilterWithPKDefaults(tableInfo *TableInfo, columnNumbers []int, input []sqltypes.Value) (output []sqltypes.Value) {

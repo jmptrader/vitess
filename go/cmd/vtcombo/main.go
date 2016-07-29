@@ -5,12 +5,15 @@
 // vtcombo: a single binary that contains:
 // - a ZK topology server based on an in-memory map.
 // - one vtgate instance.
-// - many vttablet instaces.
+// - many vttablet instances.
+// - a vtctld instance so it's easy to see the topology.
 package main
 
 import (
 	"flag"
 	"time"
+
+	"golang.org/x/net/context"
 
 	log "github.com/golang/glog"
 	"github.com/youtube/vitess/go/exit"
@@ -20,10 +23,12 @@ import (
 	"github.com/youtube/vitess/go/vt/servenv"
 	"github.com/youtube/vitess/go/vt/tabletserver"
 	"github.com/youtube/vitess/go/vt/topo"
+	"github.com/youtube/vitess/go/vt/vtctld"
 	"github.com/youtube/vitess/go/vt/vtgate"
-	"github.com/youtube/vitess/go/vt/vtgate/planbuilder"
 	"github.com/youtube/vitess/go/vt/zktopo"
 	"github.com/youtube/vitess/go/zk/fakezk"
+
+	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
 )
 
 const (
@@ -32,10 +37,11 @@ const (
 )
 
 var (
-	topology           = flag.String("topology", "", "Define which shards exist in the test topology in the form <keyspace>/<shardrange>:<dbname>,... The dbname must be unique among all shards, since they share a MySQL instance in the test environment.")
-	shardingColumnName = flag.String("sharding_column_name", "keyspace_id", "Specifies the column to use for sharding operations")
-	shardingColumnType = flag.String("sharding_column_type", "", "Specifies the type of the column to use for sharding operations")
-	vschema            = flag.String("vschema", "", "vschema file")
+	protoTopo = flag.String("proto_topo", "", "vttest proto definition of the topology, encoded in compact text format. See vttest.proto for more information.")
+
+	schemaDir = flag.String("schema_dir", "", "Schema base directory. Should contain one directory per keyspace, with a vschema.json file if necessary.")
+
+	ts topo.Server
 )
 
 func init() {
@@ -57,9 +63,13 @@ func main() {
 		exit.Return(1)
 	}
 
+	// set discoverygateway flag to default value
+	flag.Set("cells_to_watch", cell)
+
 	// register topo server
-	topo.RegisterServer("fakezk", zktopo.NewServer(fakezk.NewConn()))
-	ts := topo.GetServerByName("fakezk")
+	zkconn := fakezk.NewConn()
+	topo.RegisterServer("fakezk", zktopo.NewServer(zkconn))
+	ts = topo.GetServerByName("fakezk")
 
 	servenv.Init()
 	tabletserver.Init()
@@ -75,30 +85,30 @@ func main() {
 		log.Warning(err)
 	}
 	mysqld := mysqlctl.NewMysqld("Dba", "App", mycnf, &dbcfgs.Dba, &dbcfgs.App.ConnParams, &dbcfgs.Repl)
+	servenv.OnClose(mysqld.Close)
 
 	// tablets configuration and init
-	initTabletMap(ts, *topology, mysqld, dbcfgs, mycnf)
-
-	// vschema
-	var schema *planbuilder.Schema
-	if *vschema != "" {
-		schema, err = planbuilder.LoadFile(*vschema)
-		if err != nil {
-			log.Error(err)
-			exit.Return(1)
-		}
-		log.Infof("v3 is enabled: loaded schema from file")
+	if err := initTabletMap(ts, *protoTopo, mysqld, dbcfgs, *schemaDir, mycnf); err != nil {
+		log.Errorf("initTabletMapProto failed: %v", err)
+		exit.Return(1)
 	}
 
 	// vtgate configuration and init
 	resilientSrvTopoServer := vtgate.NewResilientSrvTopoServer(ts, "ResilientSrvTopoServer")
-	healthCheck := discovery.NewHealthCheck(30*time.Second /*connTimeoutTotal*/, 1*time.Millisecond /*retryDelay*/)
-	vtgate.Init(healthCheck, ts, resilientSrvTopoServer, schema, cell, 1*time.Millisecond /*retryDelay*/, 2 /*retryCount*/, 30*time.Second /*connTimeoutTotal*/, 10*time.Second /*connTimeoutPerConn*/, 365*24*time.Hour /*connLife*/, 0 /*maxInFlight*/, "" /*testGateway*/)
+	healthCheck := discovery.NewHealthCheck(30*time.Second /*connTimeoutTotal*/, 1*time.Millisecond /*retryDelay*/, 1*time.Hour /*healthCheckTimeout*/)
+	tabletTypesToWait := []topodatapb.TabletType{
+		topodatapb.TabletType_MASTER,
+		topodatapb.TabletType_REPLICA,
+		topodatapb.TabletType_RDONLY,
+	}
+	vtgate.Init(context.Background(), healthCheck, ts, resilientSrvTopoServer, cell, 2 /*retryCount*/, tabletTypesToWait)
+
+	// vtctld configuration and init
+	vtctld.InitVtctld(ts)
+	vtctld.HandleExplorer("zk", zktopo.NewZkExplorer(zkconn))
 
 	servenv.OnTerm(func() {
-		// FIXME(alainjobart) stop vtgate, all tablets
-		//		qsc.DisallowQueries()
-		//		agent.Stop()
+		// FIXME(alainjobart): stop vtgate
 	})
 	servenv.OnClose(func() {
 		// We will still use the topo server during lameduck period

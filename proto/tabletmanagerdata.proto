@@ -43,6 +43,13 @@ message SchemaDefinition {
   string version = 3;
 }
 
+message SchemaChangeResult {
+  // before_schema holds the schema before each change.
+  SchemaDefinition before_schema = 1;
+  // after_schema holds the schema after each change.
+  SchemaDefinition after_schema = 2;
+}
+
 // UserPermission describes a single row in the mysql.user table
 // Primary key is Host+User
 // PasswordChecksum is the crc64 of the password, for security reasons
@@ -150,25 +157,36 @@ message RefreshStateResponse {
 }
 
 message RunHealthCheckRequest {
-  topodata.TabletType tablet_type = 1;
 }
 
 message RunHealthCheckResponse {
 }
 
+message IgnoreHealthErrorRequest {
+  string pattern = 1;
+}
+
+message IgnoreHealthErrorResponse {
+}
+
 message ReloadSchemaRequest {
+  // wait_position allows scheduling a schema reload to occur after a
+  // given DDL has replicated to this slave, by specifying a replication
+  // position to wait for. Leave empty to trigger the reload immediately.
+  string wait_position = 1;
 }
 
 message ReloadSchemaResponse {
 }
 
 message PreflightSchemaRequest {
-  string change = 1;
+  repeated string changes = 1;
 }
 
 message PreflightSchemaResponse {
-  SchemaDefinition before_schema = 1;
-  SchemaDefinition after_schema = 2;
+  // change_results has for each change the schema before and after it.
+  // The number of elements is identical to the length of "changes" in the request.
+  repeated SchemaChangeResult change_results = 1;
 }
 
 message ApplySchemaRequest {
@@ -185,12 +203,11 @@ message ApplySchemaResponse {
 }
 
 message ExecuteFetchAsDbaRequest {
-  string query = 1;
+  bytes query = 1;
   string db_name = 2;
   uint64 max_rows = 3;
-  bool want_fields = 4;
-  bool disable_binlogs = 5;
-  bool reload_schema = 6;
+  bool disable_binlogs = 4;
+  bool reload_schema = 5;
 }
 
 message ExecuteFetchAsDbaResponse {
@@ -198,9 +215,8 @@ message ExecuteFetchAsDbaResponse {
 }
 
 message ExecuteFetchAsAppRequest {
-  string query = 1;
+  bytes query = 1;
   uint64 max_rows = 2;
-  bool want_fields = 3;
 }
 
 message ExecuteFetchAsAppResponse {
@@ -386,5 +402,12 @@ message BackupRequest {
 }
 
 message BackupResponse {
+  logutil.Event event = 1;
+}
+
+message RestoreFromBackupRequest {
+}
+
+message RestoreFromBackupResponse {
   logutil.Event event = 1;
 }

@@ -142,6 +142,11 @@ const char *vt_error(VT_CONN *conn) {
   return mysql_error(conn->mysql);
 }
 
+const char *vt_sqlstate(VT_CONN *conn) {
+  mysql_thread_init();
+  return mysql_sqlstate(conn->mysql);
+}
+
 my_bool vt_simple_command(
     VT_CONN *conn,
     enum enum_server_command command,
@@ -157,7 +162,15 @@ unsigned long vt_cli_safe_read(VT_CONN *conn) {
   unsigned long len;
 
   mysql_thread_init();
+
+#if MYSQL_VERSION_ID >= 50700 && MYSQL_VERSION_ID < 100000
+  // MySQL 5.7
+  len = cli_safe_read(conn->mysql, NULL);
+#else
+  // MySQL 5.6 and MariaDB
   len = cli_safe_read(conn->mysql);
+#endif // MYSQL_VERSION_ID >= 50700 && MYSQL_VERSION_ID < 100000
+
   return len == packet_error ? 0 : len;
 }
 

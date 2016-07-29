@@ -192,6 +192,7 @@ func Backup(ctx context.Context, mysqld MysqlDaemon, logger logutil.Logger, dir,
 	if err != nil {
 		return err
 	}
+	defer bs.Close()
 	bh, err := bs.StartBackup(dir, name)
 	if err != nil {
 		return fmt.Errorf("StartBackup failed: %v", err)
@@ -213,6 +214,7 @@ func backup(ctx context.Context, mysqld MysqlDaemon, logger logutil.Logger, bh b
 	sourceIsMaster := false
 	readOnly := true
 	var replicationPosition replication.Position
+	semiSyncMaster, semiSyncSlave := mysqld.SemiSyncEnabled()
 
 	// see if we need to restart replication after backup
 	logger.Infof("getting current replication status")
@@ -224,35 +226,35 @@ func backup(ctx context.Context, mysqld MysqlDaemon, logger logutil.Logger, bh b
 		// keep going if we're the master, might be a degenerate case
 		sourceIsMaster = true
 	default:
-		return fmt.Errorf("cannot get slave status: %v", err)
+		return fmt.Errorf("can't get slave status: %v", err)
 	}
 
 	// get the read-only flag
 	readOnly, err = mysqld.IsReadOnly()
 	if err != nil {
-		return fmt.Errorf("cannot get read only status: %v", err)
+		return fmt.Errorf("can't get read-only status: %v", err)
 	}
 
 	// get the replication position
 	if sourceIsMaster {
 		if !readOnly {
-			logger.Infof("turning master read-onyl before backup")
+			logger.Infof("turning master read-only before backup")
 			if err = mysqld.SetReadOnly(true); err != nil {
-				return fmt.Errorf("cannot get read only status: %v", err)
+				return fmt.Errorf("can't set read-only status: %v", err)
 			}
 		}
 		replicationPosition, err = mysqld.MasterPosition()
 		if err != nil {
-			return fmt.Errorf("cannot get master position: %v", err)
+			return fmt.Errorf("can't get master position: %v", err)
 		}
 	} else {
 		if err = StopSlave(mysqld, hookExtraEnv); err != nil {
-			return fmt.Errorf("cannot stop slave: %v", err)
+			return fmt.Errorf("can't stop slave: %v", err)
 		}
 		var slaveStatus replication.Status
 		slaveStatus, err = mysqld.SlaveStatus()
 		if err != nil {
-			return fmt.Errorf("cannot get slave status: %v", err)
+			return fmt.Errorf("can't get slave status: %v", err)
 		}
 		replicationPosition = slaveStatus.Position
 	}
@@ -261,28 +263,38 @@ func backup(ctx context.Context, mysqld MysqlDaemon, logger logutil.Logger, bh b
 	// shutdown mysqld
 	err = mysqld.Shutdown(ctx, true)
 	if err != nil {
-		return fmt.Errorf("cannot shutdown mysqld: %v", err)
+		return fmt.Errorf("can't shutdown mysqld: %v", err)
 	}
 
 	// get the files to backup
 	fes, err := findFilesTobackup(mysqld.Cnf())
 	if err != nil {
-		return fmt.Errorf("cannot find files to backup: %v", err)
+		return fmt.Errorf("can't find files to backup: %v", err)
 	}
 	logger.Infof("found %v files to backup", len(fes))
 
 	// backup everything
 	if err := backupFiles(mysqld, logger, bh, fes, replicationPosition, backupConcurrency); err != nil {
-		return fmt.Errorf("cannot backup files: %v", err)
+		return fmt.Errorf("can't backup files: %v", err)
 	}
 
 	// Try to restart mysqld
 	err = mysqld.Start(ctx)
 	if err != nil {
-		return fmt.Errorf("cannot restart mysqld: %v", err)
+		return fmt.Errorf("can't restart mysqld: %v", err)
 	}
 
 	// Restore original mysqld state that we saved above.
+	if semiSyncMaster || semiSyncSlave {
+		// Only do this if one of them was on, since both being off could mean
+		// the plugin isn't even loaded, and the server variables don't exist.
+		logger.Infof("restoring semi-sync settings from before backup: master=%v, slave=%v",
+			semiSyncMaster, semiSyncSlave)
+		err := mysqld.SetSemiSyncEnabled(semiSyncMaster, semiSyncSlave)
+		if err != nil {
+			return err
+		}
+	}
 	if slaveStartRequired {
 		logger.Infof("restarting mysql replication")
 		if err := StartSlave(mysqld, hookExtraEnv); err != nil {
@@ -413,7 +425,7 @@ func checkNoDB(ctx context.Context, mysqld MysqlDaemon) (bool, error) {
 		return false, err
 	}
 
-	qr, err := mysqld.FetchSuperQuery("SHOW DATABASES")
+	qr, err := mysqld.FetchSuperQuery(ctx, "SHOW DATABASES")
 	if err != nil {
 		return false, fmt.Errorf("checkNoDB failed: %v", err)
 	}
@@ -421,7 +433,7 @@ func checkNoDB(ctx context.Context, mysqld MysqlDaemon) (bool, error) {
 	for _, row := range qr.Rows {
 		if strings.HasPrefix(row[0].String(), "vt_") {
 			dbName := row[0].String()
-			tableQr, err := mysqld.FetchSuperQuery("SHOW TABLES FROM " + dbName)
+			tableQr, err := mysqld.FetchSuperQuery(ctx, "SHOW TABLES FROM "+dbName)
 			if err != nil {
 				return false, fmt.Errorf("checkNoDB failed: %v", err)
 			}
@@ -565,13 +577,23 @@ func removeExistingFiles(cnf *Mycnf) error {
 // Restore is the main entry point for backup restore.  If there is no
 // appropriate backup on the BackupStorage, Restore logs an error
 // and returns ErrNoBackup. Any other error is returned.
-func Restore(ctx context.Context, mysqld MysqlDaemon, dir string, restoreConcurrency int, hookExtraEnv map[string]string) (replication.Position, error) {
+func Restore(
+	ctx context.Context,
+	mysqld MysqlDaemon,
+	dir string,
+	restoreConcurrency int,
+	hookExtraEnv map[string]string,
+	localMetadata map[string]string,
+	logger logutil.Logger,
+	deleteBeforeRestore bool) (replication.Position, error) {
+
 	// find the right backup handle: most recent one, with a MANIFEST
-	log.Infof("Restore: looking for a suitable backup to restore")
+	logger.Infof("Restore: looking for a suitable backup to restore")
 	bs, err := backupstorage.GetBackupStorage()
 	if err != nil {
 		return replication.Position{}, err
 	}
+	defer bs.Close()
 	bhs, err := bs.ListBackups(dir)
 	if err != nil {
 		return replication.Position{}, fmt.Errorf("ListBackups failed: %v", err)
@@ -594,54 +616,83 @@ func Restore(ctx context.Context, mysqld MysqlDaemon, dir string, restoreConcurr
 			continue
 		}
 
-		log.Infof("Restore: found backup %v %v to restore with %v files", bh.Directory(), bh.Name(), len(bm.FileEntries))
+		logger.Infof("Restore: found backup %v %v to restore with %v files", bh.Directory(), bh.Name(), len(bm.FileEntries))
 		break
 	}
 	if toRestore < 0 {
-		log.Errorf("No backup to restore on BackupStorage for directory %v", dir)
-		return replication.Position{}, ErrNoBackup
-	}
-
-	log.Infof("Restore: checking no existing data is present")
-	ok, err := checkNoDB(ctx, mysqld)
-	if err != nil {
+		logger.Errorf("No backup to restore on BackupStorage for directory %v. Starting up empty.", dir)
+		if err = populateLocalMetadata(mysqld, localMetadata); err == nil {
+			err = ErrNoBackup
+		}
 		return replication.Position{}, err
 	}
-	if !ok {
-		return replication.Position{}, ErrExistingDB
+
+	if !deleteBeforeRestore {
+		logger.Infof("Restore: checking no existing data is present")
+		ok, err := checkNoDB(ctx, mysqld)
+		if err != nil {
+			return replication.Position{}, err
+		}
+		if !ok {
+			logger.Infof("Auto-restore is enabled, but mysqld already contains data. Assuming vttablet was just restarted.")
+			if err = populateLocalMetadata(mysqld, localMetadata); err == nil {
+				err = ErrExistingDB
+			}
+			return replication.Position{}, err
+		}
 	}
 
-	log.Infof("Restore: shutdown mysqld")
+	logger.Infof("Restore: shutdown mysqld")
 	err = mysqld.Shutdown(ctx, true)
 	if err != nil {
 		return replication.Position{}, err
 	}
 
-	log.Infof("Restore: deleting existing files")
+	logger.Infof("Restore: deleting existing files")
 	if err := removeExistingFiles(mysqld.Cnf()); err != nil {
 		return replication.Position{}, err
 	}
 
-	log.Infof("Restore: copying all files")
+	logger.Infof("Restore: reinit config file")
+	err = mysqld.ReinitConfig(ctx)
+	if err != nil {
+		return replication.Position{}, err
+	}
+
+	logger.Infof("Restore: copying all files")
 	if err := restoreFiles(mysqld.Cnf(), bh, bm.FileEntries, restoreConcurrency); err != nil {
 		return replication.Position{}, err
 	}
 
 	// mysqld needs to be running in order for mysql_upgrade to work.
-	log.Infof("Restore: starting mysqld for mysql_upgrade")
-	err = mysqld.Start(ctx)
+	// If we've just restored from a backup from previous MySQL version then mysqld
+	// may fail to start due to a different structure of mysql.* tables. The flag
+	// --skip-grant-tables ensures that these tables are not read until mysql_upgrade
+	// is executed. And since with --skip-grant-tables anyone can connect to MySQL
+	// without password, we are passing --skip-networking to greatly reduce the set
+	// of those who can connect.
+	logger.Infof("Restore: starting mysqld for mysql_upgrade")
+	err = mysqld.Start(ctx, "--skip-grant-tables", "--skip-networking")
 	if err != nil {
 		return replication.Position{}, err
 	}
 
-	log.Infof("Restore: running mysql_upgrade")
+	logger.Infof("Restore: running mysql_upgrade")
 	if err := mysqld.RunMysqlUpgrade(); err != nil {
 		return replication.Position{}, fmt.Errorf("mysql_upgrade failed: %v", err)
 	}
 
+	// Populate local_metadata before starting without --skip-networking,
+	// so it's there before we start announcing ourselves.
+	logger.Infof("Restore: populating local_metadata")
+	err = populateLocalMetadata(mysqld, localMetadata)
+	if err != nil {
+		return replication.Position{}, err
+	}
+
 	// The MySQL manual recommends restarting mysqld after running mysql_upgrade,
 	// so that any changes made to system tables take effect.
-	log.Infof("Restore: restarting mysqld after mysql_upgrade")
+	logger.Infof("Restore: restarting mysqld after mysql_upgrade")
 	err = mysqld.Shutdown(ctx, true)
 	if err != nil {
 		return replication.Position{}, err

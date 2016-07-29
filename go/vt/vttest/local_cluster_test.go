@@ -12,12 +12,27 @@ import (
 	"golang.org/x/net/context"
 
 	"github.com/youtube/vitess/go/mysql"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
 	"github.com/youtube/vitess/go/vt/vtgate/vtgateconn"
+
+	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	vttestpb "github.com/youtube/vitess/go/vt/proto/vttest"
 )
 
 func TestVitess(t *testing.T) {
-	hdl, err := LaunchVitess("test_keyspace/0:test_keyspace", "", false)
+	topology := &vttestpb.VTTestTopology{
+		Keyspaces: []*vttestpb.Keyspace{
+			{
+				Name: "test_keyspace",
+				Shards: []*vttestpb.Shard{
+					{
+						Name: "0",
+					},
+				},
+			},
+		},
+	}
+
+	hdl, err := LaunchVitess(ProtoTopo(topology))
 	if err != nil {
 		t.Error(err)
 		return
@@ -44,7 +59,7 @@ func TestVitess(t *testing.T) {
 	}
 	port := int(fport.(float64))
 	ctx := context.Background()
-	conn, err := vtgateconn.DialProtocol(ctx, vtgateProtocol(), fmt.Sprintf("localhost:%d", port), 5*time.Second)
+	conn, err := vtgateconn.DialProtocol(ctx, vtgateProtocol(), fmt.Sprintf("localhost:%d", port), 5*time.Second, "")
 	if err != nil {
 		t.Error(err)
 		return
@@ -57,7 +72,7 @@ func TestVitess(t *testing.T) {
 }
 
 func TestMySQL(t *testing.T) {
-	hdl, err := LaunchMySQL("vttest", "create table a(id int, name varchar(128), primary key(id))", false)
+	hdl, err := LaunchVitess(MySQLOnly("vttest"), Schema("create table a(id int, name varchar(128), primary key(id))"))
 	if err != nil {
 		t.Error(err)
 		return

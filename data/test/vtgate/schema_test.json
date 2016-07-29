@@ -1,77 +1,90 @@
 {
   "Keyspaces": {
     "user": {
-      "Sharded": true,
-      "Vindexes": {
+      "sharded": true,
+      "vindexes": {
         "user_index": {
-          "Type": "hash",
-          "Owner": "user"
+          "type": "hash_test",
+          "owner": "user"
         },
         "music_user_map": {
-          "Type": "lookup",
-          "Owner": "music"
+          "type": "lookup_test",
+          "owner": "music"
         },
         "name_user_map": {
-          "Type": "multi",
-          "Owner": "user"
+          "type": "multi",
+          "owner": "user"
+        },
+        "costly_map": {
+          "type": "costly",
+          "owner": "user"
         }
       },
-      "Classes": {
+      "tables": {
         "user": {
-          "ColVindexes": [
+          "column_vindexes": [
             {
-              "Col": "id",
-              "Name": "user_index"
+              "column": "Id",
+              "name": "user_index"
             },
             {
-              "Col": "name",
-              "Name": "name_user_map"
+              "column": "Name",
+              "name": "name_user_map"
+            },
+            {
+              "column": "Costly",
+              "name": "costly_map"
             }
-          ]
+          ],
+          "auto_increment": {
+            "column": "id",
+            "sequence": "seq"
+          }
         },
         "user_extra": {
-          "ColVindexes": [
+          "column_vindexes": [
             {
-              "Col": "user_id",
-              "Name": "user_index"
+              "column": "user_id",
+              "name": "user_index"
             }
-          ]
+          ],
+          "auto_increment": {
+            "column": "extra_id",
+            "sequence": "seq"
+          }
         },
         "music": {
-          "ColVindexes": [
+          "column_vindexes": [
             {
-              "Col": "user_id",
-              "Name": "user_index"
+              "column": "user_id",
+              "name": "user_index"
             },
             {
-              "Col": "id",
-              "Name": "music_user_map"
+              "column": "id",
+              "name": "music_user_map"
             }
           ]
         },
         "music_extra": {
-          "ColVindexes": [
+          "column_vindexes": [
             {
-              "Col": "user_id",
-              "Name": "user_index"
+              "column": "user_id",
+              "name": "user_index"
             },
             {
-              "Col": "music_id",
-              "Name": "music_user_map"
+              "column": "music_id",
+              "name": "music_user_map"
             }
           ]
         }
-      },
-      "Tables": {
-        "user": "user",
-        "user_extra": "user_extra",
-        "music": "music",
-        "music_extra": "music_extra"
       }
     },
     "main": {
-      "Tables": {
-        "main1": ""
+      "tables": {
+        "main1": {},
+        "seq": {
+          "type": "sequence"
+        }
       }
     }
   }

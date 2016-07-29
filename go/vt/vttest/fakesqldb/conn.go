@@ -8,6 +8,7 @@ package fakesqldb
 import (
 	"fmt"
 	"math/rand"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -35,8 +36,14 @@ type DB struct {
 	isConnFail   bool
 	data         map[string]*sqltypes.Result
 	rejectedData map[string]error
+	patternData  []exprResult
 	queryCalled  map[string]int
 	mu           sync.Mutex
+}
+
+type exprResult struct {
+	expr   *regexp.Regexp
+	result *sqltypes.Result
 }
 
 // AddQuery adds a query and its expected result.
@@ -50,14 +57,40 @@ func (db *DB) AddQuery(query string, expectedResult *sqltypes.Result) {
 	db.queryCalled[key] = 0
 }
 
+// AddQueryPattern adds an expected result for a set of queries.
+// These patterns are checked if no exact matches from AddQuery() are found.
+// This function forces the addition of begin/end anchors (^$) and turns on
+// case-insensitive matching mode.
+func (db *DB) AddQueryPattern(queryPattern string, expectedResult *sqltypes.Result) {
+	expr := regexp.MustCompile("(?is)^" + queryPattern + "$")
+	result := *expectedResult
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	db.patternData = append(db.patternData, exprResult{expr, &result})
+}
+
 // GetQuery gets a query from the fake DB.
 func (db *DB) GetQuery(query string) (*sqltypes.Result, bool) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
+
+	// Check explicit queries from AddQuery().
 	key := strings.ToLower(query)
 	result, ok := db.data[key]
 	db.queryCalled[key]++
-	return result, ok
+	if ok {
+		return result, ok
+	}
+
+	// Check query patterns from AddQueryPattern().
+	for _, pat := range db.patternData {
+		if pat.expr.MatchString(query) {
+			return pat.result, true
+		}
+	}
+
+	// Nothing matched.
+	return nil, false
 }
 
 // DeleteQuery deletes query from the fake DB.
@@ -228,8 +261,8 @@ func (conn *Conn) Shutdown() {
 }
 
 // Fields returns the current fields description for the query
-func (conn *Conn) Fields() []*querypb.Field {
-	return make([]*querypb.Field, 0)
+func (conn *Conn) Fields() ([]*querypb.Field, error) {
+	return make([]*querypb.Field, 0), nil
 }
 
 // ID returns the connection id.

@@ -11,12 +11,14 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/context"
+
 	log "github.com/golang/glog"
 	"github.com/youtube/vitess/go/sqldb"
 	"github.com/youtube/vitess/go/vt/mysqlctl/replication"
 )
 
-// mysql56 is the implementation of MysqlFlavor for MySQL 5.6.
+// mysql56 is the implementation of MysqlFlavor for MySQL 5.6+.
 type mysql56 struct {
 }
 
@@ -24,12 +26,12 @@ const mysql56FlavorID = "MySQL56"
 
 // VersionMatch implements MysqlFlavor.VersionMatch().
 func (*mysql56) VersionMatch(version string) bool {
-	return strings.HasPrefix(version, "5.6")
+	return strings.HasPrefix(version, "5.6") || strings.HasPrefix(version, "5.7")
 }
 
 // MasterPosition implements MysqlFlavor.MasterPosition().
 func (flavor *mysql56) MasterPosition(mysqld *Mysqld) (rp replication.Position, err error) {
-	qr, err := mysqld.FetchSuperQuery("SELECT @@GLOBAL.gtid_executed")
+	qr, err := mysqld.FetchSuperQuery(context.TODO(), "SELECT @@GLOBAL.gtid_executed")
 	if err != nil {
 		return rp, err
 	}
@@ -41,8 +43,13 @@ func (flavor *mysql56) MasterPosition(mysqld *Mysqld) (rp replication.Position, 
 
 // SlaveStatus implements MysqlFlavor.SlaveStatus().
 func (flavor *mysql56) SlaveStatus(mysqld *Mysqld) (replication.Status, error) {
-	fields, err := mysqld.fetchSuperQueryMap("SHOW SLAVE STATUS")
+	fields, err := mysqld.fetchSuperQueryMap(context.TODO(), "SHOW SLAVE STATUS")
 	if err != nil {
+		return replication.Status{}, err
+	}
+	if len(fields) == 0 {
+		// The query returned no data, meaning the server
+		// is not configured as a slave.
 		return replication.Status{}, ErrNotSlave
 	}
 	status := parseSlaveStatus(fields)
@@ -55,13 +62,28 @@ func (flavor *mysql56) SlaveStatus(mysqld *Mysqld) (replication.Status, error) {
 }
 
 // WaitMasterPos implements MysqlFlavor.WaitMasterPos().
-func (*mysql56) WaitMasterPos(mysqld *Mysqld, targetPos replication.Position, waitTimeout time.Duration) error {
+func (*mysql56) WaitMasterPos(ctx context.Context, mysqld *Mysqld, targetPos replication.Position) error {
 	var query string
+
 	// A timeout of 0 means wait indefinitely.
-	query = fmt.Sprintf("SELECT WAIT_UNTIL_SQL_THREAD_AFTER_GTIDS('%s', %v)", targetPos, int(waitTimeout.Seconds()))
+	var timeoutSeconds int
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout := deadline.Sub(time.Now())
+		if timeout <= 0 {
+			return fmt.Errorf("timed out waiting for position %v", targetPos)
+		}
+		// Only whole numbers of seconds are supported.
+		timeoutSeconds = int(timeout.Seconds())
+		if timeoutSeconds == 0 {
+			// We don't want a timeout <1.0s to truncate down to become infinite.
+			timeoutSeconds = 1
+		}
+	}
+
+	query = fmt.Sprintf("SELECT WAIT_UNTIL_SQL_THREAD_AFTER_GTIDS('%s', %v)", targetPos, timeoutSeconds)
 
 	log.Infof("Waiting for minimum replication position with query: %v", query)
-	qr, err := mysqld.FetchSuperQuery(query)
+	qr, err := mysqld.FetchSuperQuery(ctx, query)
 	if err != nil {
 		return fmt.Errorf("WAIT_UNTIL_SQL_THREAD_AFTER_GTIDS() failed: %v", err)
 	}
@@ -82,15 +104,15 @@ func (*mysql56) WaitMasterPos(mysqld *Mysqld, targetPos replication.Position, wa
 func (*mysql56) ResetReplicationCommands() []string {
 	return []string{
 		"STOP SLAVE",
-		"RESET SLAVE",
-		"RESET MASTER", // This will also clear gtid_executed and gtid_purged.
+		"RESET SLAVE ALL", // "ALL" makes it forget the master host:port.
+		"RESET MASTER",    // This will also clear gtid_executed and gtid_purged.
 	}
 }
 
 // PromoteSlaveCommands implements MysqlFlavor.PromoteSlaveCommands().
 func (*mysql56) PromoteSlaveCommands() []string {
 	return []string{
-		"RESET SLAVE",
+		"RESET SLAVE ALL", // "ALL" makes it forget the master host:port.
 	}
 }
 

@@ -14,6 +14,7 @@ import unittest
 
 from vtdb import keyrange_constants
 
+import base_sharding
 import environment
 import tablet
 import utils
@@ -123,6 +124,7 @@ def setUpModule():
 
 
 def tearDownModule():
+  utils.required_teardown()
   if utils.options.skip_teardown:
     return
 
@@ -154,8 +156,12 @@ def tearDownModule():
   shard_1_rdonly1.remove_tree()
 
 
-class TestBaseSplitClone(unittest.TestCase):
+class TestBaseSplitClone(unittest.TestCase, base_sharding.BaseShardingTest):
   """Abstract test base class for testing the SplitClone worker."""
+
+  def __init__(self, *args, **kwargs):
+    super(TestBaseSplitClone, self).__init__(*args, **kwargs)
+    self.num_insert_rows = utils.options.num_insert_rows
 
   def run_shard_tablets(
       self, shard_name, shard_tablets, create_table=True):
@@ -176,21 +182,17 @@ class TestBaseSplitClone(unittest.TestCase):
     """
     # Start tablets.
     #
-    # Specifying 'target_tablet_type' enables the health check
-    # i.e. tablets will be automatically returned to the serving graph
-    # after a SplitClone or SplitDiff.
-    #
     # NOTE: The future master has to be started with type 'replica'.
     shard_tablets.master.start_vttablet(
-        wait_for_state=None, target_tablet_type='replica',
+        wait_for_state=None, init_tablet_type='replica',
         init_keyspace='test_keyspace', init_shard=shard_name)
     for t in shard_tablets.replicas:
       t.start_vttablet(
-          wait_for_state=None, target_tablet_type='replica',
+          wait_for_state=None, init_tablet_type='replica',
           init_keyspace='test_keyspace', init_shard=shard_name)
     for t in shard_tablets.rdonlys:
       t.start_vttablet(
-          wait_for_state=None, target_tablet_type='rdonly',
+          wait_for_state=None, init_tablet_type='rdonly',
           init_keyspace='test_keyspace', init_shard=shard_name)
 
     # Block until tablets are up and we can enable replication.
@@ -207,9 +209,9 @@ class TestBaseSplitClone(unittest.TestCase):
     # Enforce a health check instead of waiting for the next periodic one.
     # (saves up to 1 second execution time on average)
     for t in shard_tablets.replicas:
-      utils.run_vtctl(['RunHealthCheck', t.tablet_alias, 'replica'])
+      utils.run_vtctl(['RunHealthCheck', t.tablet_alias])
     for t in shard_tablets.rdonlys:
-      utils.run_vtctl(['RunHealthCheck', t.tablet_alias, 'rdonly'])
+      utils.run_vtctl(['RunHealthCheck', t.tablet_alias])
 
     # Wait for tablet state to change after starting all tablets. This allows
     # us to start all tablets at once, instead of sequentially waiting.
@@ -343,6 +345,7 @@ class TestBaseSplitClone(unittest.TestCase):
     logging.debug('Running vtworker SplitDiff for %s', keyspace_shard)
     _, _ = utils.run_vtworker(
         ['-cell', 'test_nj', 'SplitDiff',
+         '--min_healthy_rdonly_tablets', '1',
          keyspace_shard], auto_log=True)
 
   def setUp(self):
@@ -356,8 +359,8 @@ class TestBaseSplitClone(unittest.TestCase):
           '80-', shard_1_tablets, create_table=False)
 
       logging.debug('Start inserting initial data: %s rows',
-                    utils.options.num_insert_rows)
-      self.insert_values(shard_master, utils.options.num_insert_rows, 2)
+                    self.num_insert_rows)
+      self.insert_values(shard_master, self.num_insert_rows, 2)
       logging.debug(
           'Done inserting initial data, waiting for replication to catch up')
       utils.wait_for_replication_pos(shard_master, shard_rdonly1)
@@ -379,6 +382,7 @@ class TestBaseSplitClone(unittest.TestCase):
     for shard_tablet in [all_shard_tablets, shard_0_tablets, shard_1_tablets]:
       for t in shard_tablet.all_tablets:
         t.reset_replication()
+        t.set_semi_sync_enabled(master=False)
         t.clean_dbs()
         t.kill_vttablet()
         # we allow failures here as some tablets will be gone sometimes
@@ -415,62 +419,87 @@ class TestBaseSplitCloneResiliency(TestBaseSplitClone):
     6. Verify that the data was copied successfully to both new shards
 
     Args:
-      mysql_down: boolean, True iff we expect the MySQL instances on the
-        destination masters to be down.
+      mysql_down: boolean. If True, we take down the MySQL instances on the
+        destination masters at first, then bring them back and reparent away.
 
     Raises:
       AssertionError if things didn't go as expected.
     """
+    if mysql_down:
+      logging.debug('Shutting down mysqld on destination masters.')
+      utils.wait_procs(
+          [shard_0_master.shutdown_mysql(),
+           shard_1_master.shutdown_mysql()])
+
     worker_proc, worker_port, worker_rpc_port = utils.run_vtworker_bg(
         ['--cell', 'test_nj'],
         auto_log=True)
 
+    # --max_tps is only specified to enable the throttler and ensure that the
+    # code is executed. But the intent here is not to throttle the test, hence
+    # the rate limit is set very high.
     workerclient_proc = utils.run_vtworker_client_bg(
         ['SplitClone',
          '--source_reader_count', '1',
-         '--destination_pack_count', '1',
          '--destination_writer_count', '1',
-         '--strategy=-populate_blp_checkpoint',
+         '--write_query_max_rows', '1',
+         '--min_healthy_rdonly_tablets', '1',
+         '--max_tps', '9999',
          'test_keyspace/0'],
         worker_rpc_port)
 
     if mysql_down:
-      # If MySQL is down, we wait until resolving at least twice (to verify that
-      # we do reresolve and retry due to MySQL being down).
-      worker_vars = utils.poll_for_vars(
+      # If MySQL is down, we wait until vtworker retried at least once to make
+      # sure it reached the point where a write failed due to MySQL being down.
+      # There should be two retries at least, one for each destination shard.
+      utils.poll_for_vars(
           'vtworker', worker_port,
-          'WorkerDestinationActualResolves >= 2',
-          condition_fn=lambda v: v.get('WorkerDestinationActualResolves') >= 2)
-      self.assertNotEqual(
-          worker_vars['WorkerRetryCount'], {},
-          "expected vtworker to retry, but it didn't")
-      logging.debug('Worker has resolved at least twice, starting reparent now')
+          'WorkerRetryCount >= 2',
+          condition_fn=lambda v: v.get('WorkerRetryCount') >= 2)
+      logging.debug('Worker has retried at least twice, starting reparent now')
 
-      # Original masters have no running MySQL, so need to force the reparent.
+      # vtworker is blocked at this point. This is a good time to test that its
+      # throttler server is reacting to RPCs.
+      self.check_binlog_throttler('localhost:%d' % worker_rpc_port,
+                                  ['test_keyspace/-80', 'test_keyspace/80-'],
+                                  9999)
+
+      # Bring back masters. Since we test with semi-sync now, we need at least
+      # one replica for the new master. This test is already quite expensive,
+      # so we bring back the old master as a replica rather than having a third
+      # replica up the whole time.
+      logging.debug('Restarting mysqld on destination masters')
+      utils.wait_procs(
+          [shard_0_master.start_mysql(),
+           shard_1_master.start_mysql()])
+
+      # Reparent away from the old masters.
       utils.run_vtctl(
-          ['EmergencyReparentShard', 'test_keyspace/-80',
+          ['PlannedReparentShard', 'test_keyspace/-80',
            shard_0_replica.tablet_alias], auto_log=True)
       utils.run_vtctl(
-          ['EmergencyReparentShard', 'test_keyspace/80-',
+          ['PlannedReparentShard', 'test_keyspace/80-',
            shard_1_replica.tablet_alias], auto_log=True)
 
     else:
       # NOTE: There is a race condition around this:
       #   It's possible that the SplitClone vtworker command finishes before the
       #   PlannedReparentShard vtctl command, which we start below, succeeds.
-      #   Then the test would fail because vtworker did not have to resolve the
-      #   master tablet again (due to the missing reparent).
+      #   Then the test would fail because vtworker did not have to retry.
       #
       # To workaround this, the test takes a parameter to increase the number of
       # rows that the worker has to copy (with the idea being to slow the worker
       # down).
       # You should choose a value for num_insert_rows, such that this test
       # passes for your environment (trial-and-error...)
+      # Make sure that vtworker got past the point where it picked a master
+      # for each destination shard ("finding targets" state).
       utils.poll_for_vars(
           'vtworker', worker_port,
-          'WorkerDestinationActualResolves >= 1',
-          condition_fn=lambda v: v.get('WorkerDestinationActualResolves') >= 1)
-      logging.debug('Worker has resolved at least once, starting reparent now')
+          'WorkerState == cloning the data (online)',
+          condition_fn=lambda v: v.get('WorkerState') == 'cloning the'
+          ' data (online)')
+      logging.debug('Worker is in copy state, starting reparent now')
 
       utils.run_vtctl(
           ['PlannedReparentShard', 'test_keyspace/-80',
@@ -481,10 +510,10 @@ class TestBaseSplitCloneResiliency(TestBaseSplitClone):
 
     utils.wait_procs([workerclient_proc])
 
-    # Verify that we were forced to reresolve and retry.
+    # Verify that we were forced to re-resolve and retry.
     worker_vars = utils.get_vars(worker_port)
-    self.assertGreater(worker_vars['WorkerDestinationActualResolves'], 1)
-    self.assertGreater(worker_vars['WorkerDestinationAttemptedResolves'], 1)
+    # There should be two retries at least, one for each destination shard.
+    self.assertGreater(worker_vars['WorkerRetryCount'], 1)
     self.assertNotEqual(worker_vars['WorkerRetryCount'], {},
                         "expected vtworker to retry, but it didn't")
     utils.kill_sub_process(worker_proc, soft=True)
@@ -498,6 +527,10 @@ class TestBaseSplitCloneResiliency(TestBaseSplitClone):
 
 
 class TestReparentDuringWorkerCopy(TestBaseSplitCloneResiliency):
+
+  def __init__(self, *args, **kwargs):
+    super(TestReparentDuringWorkerCopy, self).__init__(*args, **kwargs)
+    self.num_insert_rows = utils.options.num_insert_rows_before_reparent_test
 
   def test_reparent_during_worker_copy(self):
     """Simulates a destination reparent during a worker SplitClone copy.
@@ -514,35 +547,6 @@ class TestReparentDuringWorkerCopy(TestBaseSplitCloneResiliency):
 
 
 class TestMysqlDownDuringWorkerCopy(TestBaseSplitCloneResiliency):
-
-  def setUp(self):
-    """Shuts down MySQL on the destination masters.
-
-    Also runs base setup.
-    """
-    try:
-      logging.debug('Starting base setup for MysqlDownDuringWorkerCopy')
-      super(TestMysqlDownDuringWorkerCopy, self).setUp()
-
-      logging.debug('Starting MysqlDownDuringWorkerCopy-specific setup')
-      utils.wait_procs(
-          [shard_0_master.shutdown_mysql(),
-           shard_1_master.shutdown_mysql()])
-      logging.debug('Finished MysqlDownDuringWorkerCopy-specific setup')
-    except:
-      self.tearDown()
-      raise
-
-  def tearDown(self):
-    """Restarts the MySQL processes that were killed during the setup."""
-    logging.debug('Starting MysqlDownDuringWorkerCopy-specific tearDown')
-    utils.wait_procs(
-        [shard_0_master.start_mysql(),
-         shard_1_master.start_mysql()])
-    logging.debug('Finished MysqlDownDuringWorkerCopy-specific tearDown')
-
-    super(TestMysqlDownDuringWorkerCopy, self).tearDown()
-    logging.debug('Finished base tearDown for MysqlDownDuringWorkerCopy')
 
   def test_mysql_down_during_worker_copy(self):
     """This test simulates MySQL being down on the destination masters."""
@@ -584,11 +588,16 @@ class TestVtworkerWebinterface(unittest.TestCase):
         raise Exception('Should have thrown an HTTPError for the redirect.')
       except urllib2.HTTPError as e:
         self.assertEqual(e.code, 307)
+      # Wait for the Ping command to finish.
+      utils.poll_for_vars(
+          'vtworker', self.worker_port,
+          'WorkerState == done',
+          condition_fn=lambda v: v.get('WorkerState') == 'done')
       # Verify that the command logged something and its available at /status.
       status = urllib2.urlopen(worker_base_url + '/status').read()
       self.assertIn(
           "Ping command was called with message: 'pong'", status,
-          'Command did not log output to /status')
+          'Command did not log output to /status: %s' % status)
 
       # Reset the job.
       urllib2.urlopen(worker_base_url + '/reset').read()
@@ -598,11 +607,36 @@ class TestVtworkerWebinterface(unittest.TestCase):
           '/status does not indicate that the reset was successful')
 
 
+class TestMinHealthyRdonlyTablets(TestBaseSplitCloneResiliency):
+
+  def split_clone_fails_not_enough_health_rdonly_tablets(self):
+    """Verify vtworker errors if there aren't enough healthy RDONLY tablets."""
+
+    _, stderr = utils.run_vtworker(
+        ['-cell', 'test_nj',
+         '--wait_for_healthy_rdonly_tablets_timeout', '1s',
+         'SplitClone',
+         '--min_healthy_rdonly_tablets', '2',
+         'test_keyspace/0'],
+        auto_log=True,
+        expect_fail=True)
+    self.assertIn('findTargets() failed: FindWorkerTablet() failed for'
+                  ' test_nj/test_keyspace/0: not enough healthy RDONLY'
+                  ' tablets to choose from in (test_nj,test_keyspace/0),'
+                  ' have 1 healthy ones, need at least 2', stderr)
+
+
 def add_test_options(parser):
   parser.add_option(
-      '--num_insert_rows', type='int', default=3000,
+      '--num_insert_rows', type='int', default=100,
       help='The number of rows, per shard, that we should insert before '
       'resharding for this test.')
+  parser.add_option(
+      '--num_insert_rows_before_reparent_test', type='int', default=3000,
+      help='The number of rows, per shard, that we should insert before '
+      'running TestReparentDuringWorkerCopy (supersedes --num_insert_rows in '
+      'that test). There must be enough rows such that SplitClone takes '
+      'several seconds to run while we run a planned reparent.')
 
 if __name__ == '__main__':
   utils.main(test_options=add_test_options)

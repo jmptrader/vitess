@@ -9,11 +9,11 @@ import (
 	"testing"
 
 	"github.com/youtube/vitess/go/history"
-	"github.com/youtube/vitess/go/stats"
 	"github.com/youtube/vitess/go/vt/dbconfigs"
 	"github.com/youtube/vitess/go/vt/mysqlctl"
+	"github.com/youtube/vitess/go/vt/topo"
 	"github.com/youtube/vitess/go/vt/vttest/fakesqldb"
-	"github.com/youtube/vitess/go/vt/zktopo"
+	"github.com/youtube/vitess/go/vt/zktopo/zktestserver"
 	"golang.org/x/net/context"
 
 	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
@@ -25,7 +25,7 @@ import (
 func TestInitTablet(t *testing.T) {
 	ctx := context.Background()
 	db := fakesqldb.Register()
-	ts := zktopo.NewTestServer(t, []string{"cell1", "cell2"})
+	ts := zktestserver.New(t, []string{"cell1", "cell2"})
 	tabletAlias := &topodatapb.TabletAlias{
 		Cell: "cell1",
 		Uid:  1,
@@ -36,24 +36,22 @@ func TestInitTablet(t *testing.T) {
 	gRPCPort := int32(3456)
 	mysqlDaemon := mysqlctl.NewFakeMysqlDaemon(db)
 	agent := &ActionAgent{
-		TopoServer:         ts,
-		TabletAlias:        tabletAlias,
-		MysqlDaemon:        mysqlDaemon,
-		DBConfigs:          dbconfigs.DBConfigs{},
-		SchemaOverrides:    nil,
-		BinlogPlayerMap:    nil,
-		batchCtx:           ctx,
-		History:            history.New(historyLength),
-		lastHealthMapCount: new(stats.Int),
-		_healthy:           fmt.Errorf("healthcheck not run yet"),
+		TopoServer:      ts,
+		TabletAlias:     tabletAlias,
+		MysqlDaemon:     mysqlDaemon,
+		DBConfigs:       dbconfigs.DBConfigs{},
+		BinlogPlayerMap: nil,
+		batchCtx:        ctx,
+		History:         history.New(historyLength),
+		_healthy:        fmt.Errorf("healthcheck not run yet"),
 	}
 
 	// let's use a real tablet in a shard, that will create
 	// the keyspace and shard.
 	*tabletHostname = "localhost"
-	*initTabletType = "replica"
 	*initKeyspace = "test_keyspace"
 	*initShard = "-80"
+	*initTabletType = "replica"
 	tabletAlias = &topodatapb.TabletAlias{
 		Cell: "cell1",
 		Uid:  2,
@@ -86,9 +84,14 @@ func TestInitTablet(t *testing.T) {
 		t.Errorf("wrong gRPC port for tablet: %v", ti.PortMap["grpc"])
 	}
 
-	// try to init again, this time with health check on
-	*initTabletType = ""
-	*targetTabletType = "replica"
+	// update shard's master to our alias, then try to init again
+	si, err = agent.TopoServer.UpdateShardFields(ctx, "test_keyspace", "-80", func(si *topo.ShardInfo) error {
+		si.MasterAlias = tabletAlias
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("UpdateShardFields failed: %v", err)
+	}
 	if err := agent.InitTablet(port, gRPCPort); err != nil {
 		t.Fatalf("InitTablet(type, healthcheck) failed: %v", err)
 	}
@@ -96,18 +99,15 @@ func TestInitTablet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTablet failed: %v", err)
 	}
-	if ti.Type != topodatapb.TabletType_SPARE {
+	// It should still be replica, because the tablet record doesn't agree.
+	if ti.Type != topodatapb.TabletType_REPLICA {
 		t.Errorf("wrong tablet type: %v", ti.Type)
 	}
 
-	// update shard's master to our alias, then try to init again
-	si, err = ts.GetShard(ctx, "test_keyspace", "-80")
-	if err != nil {
-		t.Fatalf("GetShard failed: %v", err)
-	}
-	si.MasterAlias = tabletAlias
-	if err := ts.UpdateShard(ctx, si); err != nil {
-		t.Fatalf("UpdateShard failed: %v", err)
+	// Fix the tablet record to agree that we're master.
+	ti.Type = topodatapb.TabletType_MASTER
+	if err := ts.UpdateTablet(ctx, ti); err != nil {
+		t.Fatalf("UpdateTablet failed: %v", err)
 	}
 	if err := agent.InitTablet(port, gRPCPort); err != nil {
 		t.Fatalf("InitTablet(type, healthcheck) failed: %v", err)
@@ -120,10 +120,9 @@ func TestInitTablet(t *testing.T) {
 		t.Errorf("wrong tablet type: %v", ti.Type)
 	}
 
-	// init again with the tablet_type set, no healthcheck
+	// init again with the tablet_type set, using init_tablet_type
 	// (also check db name override and tags here)
 	*initTabletType = "replica"
-	*targetTabletType = ""
 	*initDbNameOverride = "DBNAME"
 	initTags.Set("aaa:bbb")
 	if err := agent.InitTablet(port, gRPCPort); err != nil {

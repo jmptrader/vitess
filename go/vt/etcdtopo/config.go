@@ -7,7 +7,6 @@ package etcdtopo
 import (
 	"flag"
 	"path"
-	"strings"
 
 	"github.com/youtube/vitess/go/flagutil"
 
@@ -20,10 +19,10 @@ const (
 	rootPath           = "/vt"
 	cellsDirPath       = rootPath + "/cells"
 	keyspacesDirPath   = rootPath + "/keyspaces"
+	electionDirPath    = rootPath + "/election"
 	tabletsDirPath     = rootPath + "/tablets"
 	replicationDirPath = rootPath + "/replication"
 	servingDirPath     = rootPath + "/ns"
-	vschemaPath        = rootPath + "/vschema"
 
 	// Magic file names. Directories in etcd cannot have data. Files whose names
 	// begin with '_' are hidden from directory listings.
@@ -33,8 +32,8 @@ const (
 	tabletFilename           = dataFilename
 	shardReplicationFilename = dataFilename
 	srvKeyspaceFilename      = dataFilename
-	srvShardFilename         = dataFilename
-	endPointsFilename        = dataFilename
+
+	vschemaFilename = "_VSchema"
 )
 
 var (
@@ -55,6 +54,10 @@ func keyspaceDirPath(keyspace string) string {
 
 func keyspaceFilePath(keyspace string) string {
 	return path.Join(keyspaceDirPath(keyspace), keyspaceFilename)
+}
+
+func vschemaFilePath(keyspace string) string {
+	return path.Join(keyspaceDirPath(keyspace), vschemaFilename)
 }
 
 func shardsDirPath(keyspace string) string {
@@ -97,18 +100,10 @@ func srvKeyspaceFilePath(keyspace string) string {
 	return path.Join(srvKeyspaceDirPath(keyspace), srvKeyspaceFilename)
 }
 
-func srvShardDirPath(keyspace, shard string) string {
-	return path.Join(srvKeyspaceDirPath(keyspace), shard)
+func srvVSchemaDirPath() string {
+	return servingDirPath
 }
 
-func srvShardFilePath(keyspace, shard string) string {
-	return path.Join(srvShardDirPath(keyspace, shard), srvShardFilename)
-}
-
-func endPointsDirPath(keyspace, shard string, tabletType topodatapb.TabletType) string {
-	return path.Join(srvShardDirPath(keyspace, shard), strings.ToLower(tabletType.String()))
-}
-
-func endPointsFilePath(keyspace, shard string, tabletType topodatapb.TabletType) string {
-	return path.Join(endPointsDirPath(keyspace, shard, tabletType), endPointsFilename)
+func srvVSchemaFilePath() string {
+	return path.Join(srvVSchemaDirPath(), vschemaFilename)
 }

@@ -36,8 +36,7 @@ func TestValid(t *testing.T) {
 	}, {
 		input: "select /* simplest */ 1 from t",
 	}, {
-		input:  "select /* keyword col */ `By` from t",
-		output: "select /* keyword col */ `by` from t",
+		input: "select /* keyword col */ `By` from t",
 	}, {
 		input: "select /* double star **/ 1 from t",
 	}, {
@@ -62,13 +61,11 @@ func TestValid(t *testing.T) {
 	}, {
 		input: "select /* union all */ 1 from t union all select 1 from t",
 	}, {
-		input: "select /* minus */ 1 from t minus select 1 from t",
-	}, {
-		input: "select /* except */ 1 from t except select 1 from t",
-	}, {
-		input: "select /* intersect */ 1 from t intersect select 1 from t",
+		input: "select /* union distinct */ 1 from t union distinct select 1 from t",
 	}, {
 		input: "select /* distinct */ distinct 1 from t",
+	}, {
+		input: "select /* straight_join */ straight_join 1 from t",
 	}, {
 		input: "select /* for update */ 1 from t for update",
 	}, {
@@ -83,10 +80,14 @@ func TestValid(t *testing.T) {
 	}, {
 		input: "select /* column alias with as */ a as b from t",
 	}, {
-		input:  "select /* keyword column alias */ a as `By` from t",
-		output: "select /* keyword column alias */ a as `by` from t",
+		input: "select /* keyword column alias */ a as `By` from t",
 	}, {
 		input: "select /* a.* */ a.* from t",
+	}, {
+		input:  "select next value for t",
+		output: "select next value from t",
+	}, {
+		input: "select next value from t",
 	}, {
 		input: "select /* `By`.* */ `By`.* from t",
 	}, {
@@ -102,6 +103,8 @@ func TestValid(t *testing.T) {
 	}, {
 		input: "select /* parenthesis */ 1 from (t)",
 	}, {
+		input: "select /* parenthesis multi-table */ 1 from (t1, t2)",
+	}, {
 		input: "select /* table list */ 1 from t1, t2",
 	}, {
 		input: "select /* parenthessis in table list 1 */ 1 from (t1), t2",
@@ -110,8 +113,7 @@ func TestValid(t *testing.T) {
 	}, {
 		input: "select /* use */ 1 from t1 use index (a) where b = 1",
 	}, {
-		input:  "select /* keyword index */ 1 from t1 use index (`By`) where b = 1",
-		output: "select /* keyword index */ 1 from t1 use index (`by`) where b = 1",
+		input: "select /* keyword index */ 1 from t1 use index (`By`) where b = 1",
 	}, {
 		input: "select /* ignore */ 1 from t1 as t2 ignore index (a), t3 use index (b) where b = 1",
 	}, {
@@ -128,24 +130,39 @@ func TestValid(t *testing.T) {
 	}, {
 		input: "select /* join */ 1 from t1 join t2",
 	}, {
-		input: "select /* straight_join */ 1 from t1 straight_join t2",
-	}, {
-		input: "select /* left join */ 1 from t1 left join t2",
-	}, {
-		input:  "select /* left outer join */ 1 from t1 left outer join t2",
-		output: "select /* left outer join */ 1 from t1 left join t2",
-	}, {
-		input: "select /* right join */ 1 from t1 right join t2",
-	}, {
-		input:  "select /* right outer join */ 1 from t1 right outer join t2",
-		output: "select /* right outer join */ 1 from t1 right join t2",
+		input: "select /* join on */ 1 from t1 join t2 on a = b",
 	}, {
 		input:  "select /* inner join */ 1 from t1 inner join t2",
 		output: "select /* inner join */ 1 from t1 join t2",
 	}, {
-		input: "select /* cross join */ 1 from t1 cross join t2",
+		input:  "select /* cross join */ 1 from t1 cross join t2",
+		output: "select /* cross join */ 1 from t1 join t2",
+	}, {
+		input: "select /* straight_join */ 1 from t1 straight_join t2",
+	}, {
+		input: "select /* straight_join on */ 1 from t1 straight_join t2 on a = b",
+	}, {
+		input: "select /* left join */ 1 from t1 left join t2 on a = b",
+	}, {
+		input:  "select /* left outer join */ 1 from t1 left outer join t2 on a = b",
+		output: "select /* left outer join */ 1 from t1 left join t2 on a = b",
+	}, {
+		input: "select /* right join */ 1 from t1 right join t2 on a = b",
+	}, {
+		input:  "select /* right outer join */ 1 from t1 right outer join t2 on a = b",
+		output: "select /* right outer join */ 1 from t1 right join t2 on a = b",
 	}, {
 		input: "select /* natural join */ 1 from t1 natural join t2",
+	}, {
+		input: "select /* natural left join */ 1 from t1 natural left join t2",
+	}, {
+		input:  "select /* natural left outer join */ 1 from t1 natural left join t2",
+		output: "select /* natural left outer join */ 1 from t1 natural left join t2",
+	}, {
+		input: "select /* natural right join */ 1 from t1 natural right join t2",
+	}, {
+		input:  "select /* natural right outer join */ 1 from t1 natural right join t2",
+		output: "select /* natural right outer join */ 1 from t1 natural right join t2",
 	}, {
 		input: "select /* join on */ 1 from t1 join t2 on a = b",
 	}, {
@@ -153,7 +170,10 @@ func TestValid(t *testing.T) {
 	}, {
 		input: "select /* keyword schema & table name */ 1 from `By`.`bY`",
 	}, {
-		input: "select /* select in from */ 1 from (select 1 from t)",
+		input: "select /* select in from */ 1 from (select 1 from t) as a",
+	}, {
+		input:  "select /* select in from with no as */ 1 from (select 1 from t) a",
+		output: "select /* select in from with no as */ 1 from (select 1 from t) as a",
 	}, {
 		input: "select /* where */ 1 from t where a = b",
 	}, {
@@ -173,8 +193,6 @@ func TestValid(t *testing.T) {
 	}, {
 		input: "select /* exists */ 1 from t where exists (select 1 from t)",
 	}, {
-		input: "select /* keyrange */ 1 from t where keyrange(1, 2)",
-	}, {
 		input: "select /* (boolean) */ 1 from t where not (a = b)",
 	}, {
 		input: "select /* in value list */ 1 from t where a in (b, c)",
@@ -186,6 +204,16 @@ func TestValid(t *testing.T) {
 		input: "select /* like */ 1 from t where a like b",
 	}, {
 		input: "select /* not like */ 1 from t where a not like b",
+	}, {
+		input: "select /* regexp */ 1 from t where a regexp b",
+	}, {
+		input: "select /* not regexp */ 1 from t where a not regexp b",
+	}, {
+		input:  "select /* rlike */ 1 from t where a rlike b",
+		output: "select /* rlike */ 1 from t where a regexp b",
+	}, {
+		input:  "select /* not rlike */ 1 from t where a not rlike b",
+		output: "select /* not rlike */ 1 from t where a not regexp b",
 	}, {
 		input: "select /* between */ 1 from t where a between b and c",
 	}, {
@@ -275,8 +303,9 @@ func TestValid(t *testing.T) {
 	}, {
 		input: "select /* a.b */ a.b from t",
 	}, {
-		input:  "select /* keyword a.b */ `By`.`bY` from t",
-		output: "select /* keyword a.b */ `By`.`by` from t",
+		input: "select /* a.b.c */ a.b.c from t",
+	}, {
+		input: "select /* keyword a.b */ `By`.`bY` from t",
 	}, {
 		input: "select /* string */ 'a' from t",
 	}, {
@@ -349,6 +378,8 @@ func TestValid(t *testing.T) {
 	}, {
 		input: "select /* - - */ - -b from t",
 	}, {
+		input: "select /* interval */ adddate('2008-01-02', interval 31 day) from t",
+	}, {
 		input: "select /* dual */ 1 from dual",
 	}, {
 		input:  "select /* Dual */ 1 from Dual",
@@ -365,14 +396,14 @@ func TestValid(t *testing.T) {
 	}, {
 		input: "insert /* multi-value list */ into a values (1, 2), (3, 4)",
 	}, {
-		input:  "insert /* set */ into a set a = 1, a.b = 2",
-		output: "insert /* set */ into a(a, a.b) values (1, 2)",
+		input:  "insert /* set */ into a set a = 1, b = 2",
+		output: "insert /* set */ into a(a, b) values (1, 2)",
 	}, {
 		input: "insert /* value expression list */ into a values (a + 1, 2 * 3)",
 	}, {
 		input: "insert /* column list */ into a(a, b) values (1, 2)",
 	}, {
-		input: "insert /* qualified column list */ into a(a, a.b) values (1, 2)",
+		input: "insert /* qualified column list */ into a(a, b) values (1, 2)",
 	}, {
 		input: "insert /* select */ into a select b, c from d",
 	}, {
@@ -381,8 +412,6 @@ func TestValid(t *testing.T) {
 		input: "update /* simple */ a set b = 3",
 	}, {
 		input: "update /* a.b */ a.b set b = 3",
-	}, {
-		input: "update /* b.c */ a set b.c = 3",
 	}, {
 		input: "update /* list */ a set b = 3, c = 4",
 	}, {
@@ -481,13 +510,14 @@ func TestValid(t *testing.T) {
 		input:  "drop view a",
 		output: "drop table a",
 	}, {
-		input: "drop table a",
+		input:  "drop table a",
+		output: "drop table a",
 	}, {
 		input:  "drop table if exists a",
-		output: "drop table a",
+		output: "drop table if exists a",
 	}, {
 		input:  "drop view if exists a",
-		output: "drop table a",
+		output: "drop table if exists a",
 	}, {
 		input:  "drop index b on a",
 		output: "alter table a",
@@ -517,6 +547,13 @@ func TestValid(t *testing.T) {
 		if out != tcase.output {
 			t.Errorf("out: %s, want %s", out, tcase.output)
 		}
+		// This test just exercises the tree walking functionality.
+		// There's no way automated way to verify that a node calls
+		// all its children. But we can examine code coverage and
+		// ensure that all WalkSubtree functions were called.
+		Walk(func(node SQLNode) (bool, error) {
+			return true, nil
+		}, tree)
 	}
 }
 
@@ -533,26 +570,32 @@ func TestCaseSensitivity(t *testing.T) {
 		input:  "alter table A foo",
 		output: "alter table A",
 	}, {
+		// View names get lower-cased.
+		input:  "alter view A foo",
+		output: "alter table a",
+	}, {
 		input:  "alter table A rename to B",
 		output: "rename table A B",
 	}, {
 		input:  "rename table A to B",
 		output: "rename table A B",
 	}, {
-		input: "drop table B",
+		input:  "drop table B",
+		output: "drop table B",
+	}, {
+		input:  "drop table if exists B",
+		output: "drop table if exists B",
 	}, {
 		input:  "drop index b on A",
 		output: "alter table A",
 	}, {
 		input: "select a from B",
 	}, {
-		input:  "select A as B from C",
-		output: "select a as b from C",
+		input: "select A as B from C",
 	}, {
 		input: "select B.* from c",
 	}, {
-		input:  "select B.A from c",
-		output: "select B.a from c",
+		input: "select B.A from c",
 	}, {
 		input: "select * from B as C",
 	}, {
@@ -562,23 +605,19 @@ func TestCaseSensitivity(t *testing.T) {
 	}, {
 		input: "update A.B set b = 1",
 	}, {
-		input:  "select A() from b",
-		output: "select a() from b",
+		input: "select A() from b",
 	}, {
-		input:  "select A(B, C) from b",
-		output: "select a(b, c) from b",
+		input: "select A(B, C) from b",
 	}, {
-		input:  "select A(distinct B, C) from b",
-		output: "select a(distinct b, c) from b",
+		input: "select A(distinct B, C) from b",
 	}, {
+		// IF is an exception. It's always lower-cased.
 		input:  "select IF(B, C) from b",
-		output: "select if(b, c) from b",
+		output: "select if(B, C) from b",
 	}, {
-		input:  "select * from b use index (A)",
-		output: "select * from b use index (a)",
+		input: "select * from b use index (A)",
 	}, {
-		input:  "insert into A(A, B) values (1, 2)",
-		output: "insert into A(a, b) values (1, 2)",
+		input: "insert into A(A, B) values (1, 2)",
 	}, {
 		input:  "CREATE TABLE A",
 		output: "create table A",
@@ -591,6 +630,17 @@ func TestCaseSensitivity(t *testing.T) {
 	}, {
 		input:  "drop view A",
 		output: "drop table a",
+	}, {
+		input:  "drop view if exists A",
+		output: "drop table if exists a",
+	}, {
+		input:  "select /* lock in SHARE MODE */ 1 from t lock in SHARE MODE",
+		output: "select /* lock in SHARE MODE */ 1 from t lock in share mode",
+	}, {
+		input:  "select next VALUE from t",
+		output: "select next value from t",
+	}, {
+		input: "select /* use */ 1 from t1 use index (A) where b = 1",
 	}}
 	for _, tcase := range validSQL {
 		if tcase.output == "" {
@@ -609,7 +659,7 @@ func TestCaseSensitivity(t *testing.T) {
 }
 
 func TestErrors(t *testing.T) {
-	validSQL := []struct {
+	invalidSQL := []struct {
 		input  string
 		output string
 	}{{
@@ -680,8 +730,21 @@ func TestErrors(t *testing.T) {
 	}, {
 		input:  "select /* aa",
 		output: "syntax error at position 13 near '/* aa'",
+	}, {
+		// This construct is considered invalid due to a grammar conflict.
+		input:  "insert into a select * from b join c on duplicate key update d=e",
+		output: "syntax error at position 50 near 'duplicate'",
+	}, {
+		input:  "select * from a left join b",
+		output: "syntax error at position 29",
+	}, {
+		input:  "select * from a natural join b on c = d",
+		output: "syntax error at position 34 near 'on'",
+	}, {
+		input:  "select next id from a",
+		output: "expecting value after next at position 23",
 	}}
-	for _, tcase := range validSQL {
+	for _, tcase := range invalidSQL {
 		if tcase.output == "" {
 			tcase.output = tcase.input
 		}

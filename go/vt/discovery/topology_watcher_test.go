@@ -22,49 +22,53 @@ func TestShardReplicationWatcher(t *testing.T) {
 
 func checkWatcher(t *testing.T, cellTablets bool) {
 	ft := newFakeTopo(cellTablets)
-	fhc := newFakeHealthCheck()
+	fhc := NewFakeHealthCheck()
 	t.Logf(`ft = FakeTopo(); fhc = FakeHealthCheck()`)
-	var ctw *TopologyWatcher
+	var tw *TopologyWatcher
 	if cellTablets {
-		ctw = NewCellTabletsWatcher(topo.Server{Impl: ft}, fhc, "aa", 10*time.Minute, 5)
-		t.Logf(`ctw = CellTabletsWatcher(topo.Server{ft}, fhc, "aa", 10ms, 5)`)
+		tw = NewCellTabletsWatcher(topo.Server{Impl: ft}, fhc, "aa", 10*time.Minute, 5)
+		t.Logf(`tw = CellTabletsWatcher(topo.Server{ft}, fhc, "aa", 10ms, 5)`)
 	} else {
-		ctw = NewShardReplicationWatcher(topo.Server{Impl: ft}, fhc, "aa", "keyspace", "shard", 10*time.Minute, 5)
-		t.Logf(`ctw = ShardReplicationWatcher(topo.Server{ft}, fhc, "aa", "keyspace", "shard", 10ms, 5)`)
+		tw = NewShardReplicationWatcher(topo.Server{Impl: ft}, fhc, "aa", "keyspace", "shard", 10*time.Minute, 5)
+		t.Logf(`tw = ShardReplicationWatcher(topo.Server{ft}, fhc, "aa", "keyspace", "shard", 10ms, 5)`)
 	}
 
 	// add a tablet to the topology
 	ft.AddTablet("aa", 0, "host1", map[string]int32{"vt": 123})
-	ctw.loadTablets()
-	t.Logf(`ft.AddTablet("aa", 0, "host1", {"vt": 123}); ctw.loadTablets()`)
-	want := &topodatapb.EndPoint{
-		Uid:     0,
-		Host:    "host1",
-		PortMap: map[string]int32{"vt": 123},
+	tw.loadTablets()
+	t.Logf(`ft.AddTablet("aa", 0, "host1", {"vt": 123}); tw.loadTablets()`)
+	want := &topodatapb.Tablet{
+		Alias: &topodatapb.TabletAlias{
+			Uid: 0,
+		},
+		Hostname: "host1",
+		PortMap:  map[string]int32{"vt": 123},
 	}
-	allEPs := fhc.GetAllEndPoints()
-	key := EndPointToMapKey(want)
-	if _, ok := allEPs[key]; !ok || len(allEPs) != 1 {
-		t.Errorf("fhc.GetAllEndPoints() = %+v; want %+v", allEPs, want)
+	allTablets := fhc.GetAllTablets()
+	key := TabletToMapKey(want)
+	if _, ok := allTablets[key]; !ok || len(allTablets) != 1 {
+		t.Errorf("fhc.GetAllTablets() = %+v; want %+v", allTablets, want)
 	}
 
 	// same tablet, different port, should update (previous
 	// one should go away, new one be added).
 	ft.AddTablet("aa", 0, "host1", map[string]int32{"vt": 456})
-	ctw.loadTablets()
-	t.Logf(`ft.AddTablet("aa", 0, "host1", {"vt": 456}); ctw.loadTablets()`)
-	want = &topodatapb.EndPoint{
-		Uid:     0,
-		Host:    "host1",
-		PortMap: map[string]int32{"vt": 456},
+	tw.loadTablets()
+	t.Logf(`ft.AddTablet("aa", 0, "host1", {"vt": 456}); tw.loadTablets()`)
+	want = &topodatapb.Tablet{
+		Alias: &topodatapb.TabletAlias{
+			Uid: 0,
+		},
+		Hostname: "host1",
+		PortMap:  map[string]int32{"vt": 456},
 	}
-	allEPs = fhc.GetAllEndPoints()
-	key = EndPointToMapKey(want)
-	if _, ok := allEPs[key]; !ok || len(allEPs) != 1 {
-		t.Errorf("fhc.GetAllEndPoints() = %+v; want %+v", allEPs, want)
+	allTablets = fhc.GetAllTablets()
+	key = TabletToMapKey(want)
+	if _, ok := allTablets[key]; !ok || len(allTablets) != 1 {
+		t.Errorf("fhc.GetAllTablets() = %+v; want %+v", allTablets, want)
 	}
 
-	ctw.Stop()
+	tw.Stop()
 }
 
 func newFakeTopo(expectGetTabletsByCell bool) *fakeTopo {
@@ -151,4 +155,82 @@ func (ft *fakeTopo) GetTablet(ctx context.Context, alias *topodatapb.TabletAlias
 	ft.mu.RLock()
 	defer ft.mu.RUnlock()
 	return ft.tablets[*alias], 0, nil
+}
+
+func TestFilterByShard(t *testing.T) {
+	testcases := []struct {
+		filters  []string
+		keyspace string
+		shard    string
+		included bool
+	}{
+		// un-sharded keyspaces
+		{
+			filters:  []string{"ks1|0"},
+			keyspace: "ks1",
+			shard:    "0",
+			included: true,
+		},
+		{
+			filters:  []string{"ks1|0"},
+			keyspace: "ks2",
+			shard:    "0",
+			included: false,
+		},
+		// custom sharding, different shard
+		{
+			filters:  []string{"ks1|0"},
+			keyspace: "ks1",
+			shard:    "1",
+			included: false,
+		},
+		// keyrange based sharding
+		{
+			filters:  []string{"ks1|-80"},
+			keyspace: "ks1",
+			shard:    "0",
+			included: false,
+		},
+		{
+			filters:  []string{"ks1|-80"},
+			keyspace: "ks1",
+			shard:    "-40",
+			included: true,
+		},
+		{
+			filters:  []string{"ks1|-80"},
+			keyspace: "ks1",
+			shard:    "-80",
+			included: true,
+		},
+		{
+			filters:  []string{"ks1|-80"},
+			keyspace: "ks1",
+			shard:    "80-",
+			included: false,
+		},
+		{
+			filters:  []string{"ks1|-80"},
+			keyspace: "ks1",
+			shard:    "c0-",
+			included: false,
+		},
+	}
+
+	for _, tc := range testcases {
+		fbs, err := NewFilterByShard(nil, tc.filters)
+		if err != nil {
+			t.Errorf("cannot create FilterByShard for filters %v: %v", tc.filters, err)
+		}
+
+		tablet := &topodatapb.Tablet{
+			Keyspace: tc.keyspace,
+			Shard:    tc.shard,
+		}
+
+		got := fbs.isIncluded(tablet)
+		if got != tc.included {
+			t.Errorf("isIncluded(%v,%v) for filters %v returned %v but expected %v", tc.keyspace, tc.shard, tc.filters, got, tc.included)
+		}
+	}
 }

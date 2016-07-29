@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+"""Common import for all tests."""
+
 import base64
 import json
 import logging
@@ -15,20 +17,17 @@ import time
 import unittest
 import urllib2
 
-import MySQLdb
-
-from vtproto import topodata_pb2
-
-from vtdb import keyrange_constants
-
-from vtctl import vtctl_client
-
 import environment
 from mysql_flavor import mysql_flavor
 from mysql_flavor import set_mysql_flavor
+import MySQLdb
 from protocols_flavor import protocols_flavor
-from protocols_flavor import set_protocols_flavor
 from topo_flavor.server import set_topo_server_flavor
+from vtctl import vtctl_client
+from vtdb import keyrange_constants
+from vtgate_gateway_flavor.gateway import set_vtgate_gateway_flavor
+from vtgate_gateway_flavor.gateway import vtgate_gateway_flavor
+from vtproto import topodata_pb2
 
 
 options = None
@@ -87,8 +86,9 @@ def add_options(parser):
       '--skip-teardown', action='store_true',
       help='Leave the global processes running after the test is done.')
   parser.add_option('--mysql-flavor')
-  parser.add_option('--protocols-flavor')
+  parser.add_option('--protocols-flavor', default='grpc')
   parser.add_option('--topo-server-flavor', default='zookeeper')
+  parser.add_option('--vtgate-gateway-flavor', default='discoverygateway')
 
 
 def set_options(opts):
@@ -96,8 +96,9 @@ def set_options(opts):
   options = opts
 
   set_mysql_flavor(options.mysql_flavor)
-  set_protocols_flavor(options.protocols_flavor)
+  environment.setup_protocol_flavor(options.protocols_flavor)
   set_topo_server_flavor(options.topo_server_flavor)
+  set_vtgate_gateway_flavor(options.vtgate_gateway_flavor)
   environment.skip_build = options.skip_build
 
 
@@ -122,13 +123,7 @@ def main(mod=None, test_options=None):
     test_options(parser)
   (options, args) = parser.parse_args()
 
-  if options.verbose == 0:
-    level = logging.WARNING
-  elif options.verbose == 1:
-    level = logging.INFO
-  else:
-    level = logging.DEBUG
-  logging.getLogger().setLevel(level)
+  set_log_level(options.verbose)
   logging.basicConfig(
       format='-- %(asctime)s %(module)s:%(lineno)d %(levelname)s %(message)s')
 
@@ -197,15 +192,17 @@ def _add_proc(proc):
     print >> f, proc.pid, os.path.basename(proc.args[0])
 
 
-def kill_sub_processes():
-  # FIXME(alainjobart): this part is not really related to sub-processes,
-  # but it's a general clean-up. Maybe a utils.clean_up() might be better,
-  # as all integration tests end up running this anyway.
+def required_teardown():
+  """Required cleanup steps that can't be skipped with --skip-teardown."""
+  # We can't skip closing of gRPC connections, because the Python interpreter
+  # won't let us die if any connections are left open.
   global vtctld_connection
   if vtctld_connection:
     vtctld_connection.close()
     vtctld_connection = None
 
+
+def kill_sub_processes():
   for proc in pid_map.values():
     if proc.pid and proc.returncode is None:
       proc.kill()
@@ -345,10 +342,11 @@ def zk_cat_json(path):
 # use as follow:
 #    timeout = 10
 #    while True:
-#      if done:
+#      <step>
+#      if <done>:
 #        break
-#      timeout = utils.wait_step('condition', timeout)
-def wait_step(msg, timeout, sleep_time=1.0):
+#      timeout = utils.wait_step('description of condition', timeout)
+def wait_step(msg, timeout, sleep_time=0.1):
   timeout -= sleep_time
   if timeout <= 0:
     raise TestError('timeout waiting for condition "%s"' % msg)
@@ -375,15 +373,43 @@ def get_vars(port):
     raise
 
 
-# wait_for_vars will wait until we can actually get the vars from a process,
-# and if var is specified, will wait until that var is in vars
-def wait_for_vars(name, port, var=None):
-  timeout = 10.0
+def wait_for_vars(name, port, var=None, key=None, value=None, timeout=10.0):
+  """Waits for the vars of a process, and optional values.
+
+  Args:
+    name: nickname for the process.
+    port: process port to look at.
+    var: if specified, waits for var in vars.
+    key: if specified, waits for vars[var][key]==value.
+    value: if key if specified, waits for vars[var][key]==value.
+    timeout: how long to wait.
+  """
+  text = 'waiting for http://localhost:%d/debug/vars of %s' % (port, name)
+  if var:
+    text += ' value %s' % var
+    if key:
+      text += ' key %s:%s' % (key, value)
   while True:
+    display_text = text
     v = get_vars(port)
-    if v and (var is None or var in v):
-      break
-    timeout = wait_step('waiting for /debug/vars of %s' % name, timeout)
+    if v:
+      if var is None:
+        break
+      if var in v:
+        if key is None:
+          break
+        if key in v[var]:
+          if v[var][key] == value:
+            break
+          else:
+            display_text += ' (current value:%s)' % v[var][key]
+        else:
+          display_text += ' (no current value)'
+      else:
+        display_text += ' (%s not in vars)' % var
+    else:
+      display_text += ' (no vars yet)'
+    timeout = wait_step(display_text, timeout)
 
 
 def poll_for_vars(
@@ -437,10 +463,11 @@ def poll_for_vars(
 
 
 def apply_vschema(vschema):
-  fname = os.path.join(environment.tmproot, 'vschema.json')
-  with open(fname, 'w') as f:
-    f.write(vschema)
-  run_vtctl(['ApplyVSchema', '-vschema_file', fname])
+  for k, v in vschema.iteritems():
+    fname = os.path.join(environment.tmproot, 'vschema.json')
+    with open(fname, 'w') as f:
+      f.write(v)
+    run_vtctl(['ApplyVSchema', '-vschema_file', fname, k])
 
 
 def wait_for_tablet_type(tablet_alias, expected_type, timeout=10):
@@ -501,27 +528,39 @@ class VtGate(object):
     self.port = port or environment.reserve_ports(1)
     if protocols_flavor().vtgate_protocol() == 'grpc':
       self.grpc_port = environment.reserve_ports(1)
-    self.secure_port = None
     self.proc = None
 
-  def start(self, cell='test_nj', retry_delay=1, retry_count=2,
+  def start(self, cell='test_nj', retry_count=2,
             topo_impl=None, cache_ttl='1s',
-            timeout_total='4s', timeout_per_conn='2s',
-            extra_args=None):
+            healthcheck_conn_timeout='2s',
+            extra_args=None, tablets=None,
+            tablet_types_to_wait='MASTER,REPLICA',
+            l2vtgates=None):
     """Start vtgate. Saves it into the global vtgate variable if not set yet."""
 
     args = environment.binary_args('vtgate') + [
         '-port', str(self.port),
         '-cell', cell,
-        '-retry-delay', '%ss' % (str(retry_delay)),
         '-retry-count', str(retry_count),
         '-log_dir', environment.vtlogroot,
         '-srv_topo_cache_ttl', cache_ttl,
-        '-conn-timeout-total', timeout_total,
-        '-conn-timeout-per-conn', timeout_per_conn,
-        '-bsonrpc_timeout', '5s',
         '-tablet_protocol', protocols_flavor().tabletconn_protocol(),
+        '-tablet_grpc_combine_begin_execute',
     ]
+    if l2vtgates:
+      args.extend([
+          '-gateway_implementation', 'l2vtgategateway',
+          '-l2vtgategateway_addrs', ','.join(l2vtgates),
+      ])
+    else:
+      args.extend([
+          '-healthcheck_conn_timeout', healthcheck_conn_timeout,
+          '-gateway_implementation', vtgate_gateway_flavor().flavor(),
+      ])
+      args.extend(vtgate_gateway_flavor().flags(cell=cell, tablets=tablets))
+      if tablet_types_to_wait:
+        args.extend(['-tablet_types_to_wait', tablet_types_to_wait])
+
     if protocols_flavor().vtgate_protocol() == 'grpc':
       args.extend(['-grpc_port', str(self.grpc_port)])
     if protocols_flavor().service_map():
@@ -534,10 +573,7 @@ class VtGate(object):
       args.extend(extra_args)
 
     self.proc = run_bg(args)
-    if self.secure_port:
-      wait_for_vars('vtgate', self.port, 'SecureConnections')
-    else:
-      wait_for_vars('vtgate', self.port)
+    wait_for_vars('vtgate', self.port)
 
     global vtgate
     if not vtgate:
@@ -566,18 +602,18 @@ class VtGate(object):
       vtgate = None
 
   def addr(self):
-    """Returns the address of the vtgate process."""
+    """Returns the address of the vtgate process, for web access."""
     return 'localhost:%d' % self.port
 
-  def secure_addr(self):
-    """Returns the secure address of the vtgate process."""
-    return 'localhost:%d' % self.secure_port
-
-  def rpc_endpoint(self):
-    """Returns the endpoint to use for RPCs."""
-    if protocols_flavor().vtgate_protocol() == 'grpc':
-      return 'localhost:%d' % self.grpc_port
-    return self.addr()
+  def rpc_endpoint(self, python=False):
+    """Returns the protocol and endpoint to use for RPCs."""
+    if python:
+      protocol = protocols_flavor().vtgate_python_protocol()
+    else:
+      protocol = protocols_flavor().vtgate_protocol()
+    if protocol == 'grpc':
+      return protocol, 'localhost:%d' % self.grpc_port
+    return protocol, self.addr()
 
   def get_status(self):
     """Returns the status page for this process."""
@@ -587,13 +623,21 @@ class VtGate(object):
     """Returns the vars for this process."""
     return get_vars(self.port)
 
-  def vtclient(self, sql, tablet_type='master', bindvars=None,
-               streaming=False, verbose=False, raise_on_error=False):
+  def vtclient(self, sql, keyspace=None, shard=None, tablet_type='master',
+               bindvars=None, streaming=False,
+               verbose=False, raise_on_error=True, json_output=False):
     """Uses the vtclient binary to send a query to vtgate."""
+    protocol, addr = self.rpc_endpoint()
     args = environment.binary_args('vtclient') + [
-        '-server', self.rpc_endpoint(),
+        '-server', addr,
         '-tablet_type', tablet_type,
-        '-vtgate_protocol', protocols_flavor().vtgate_protocol()]
+        '-vtgate_protocol', protocol]
+    if json_output:
+      args.append('-json')
+    if keyspace:
+      args.extend(['-keyspace', keyspace])
+    if shard:
+      args.extend(['-shard', shard])
     if bindvars:
       args.extend(['-bind_variables', json.dumps(bindvars)])
     if streaming:
@@ -603,13 +647,15 @@ class VtGate(object):
     args.append(sql)
 
     out, err = run(args, raise_on_error=raise_on_error, trap_output=True)
-    out = out.splitlines()
+    if json_output:
+      return json.loads(out), err
     return out, err
 
   def execute(self, sql, tablet_type='master', bindvars=None):
     """Uses 'vtctl VtGateExecute' to execute a command."""
-    args = ['VtGateExecute',
-            '-server', self.rpc_endpoint(),
+    _, addr = self.rpc_endpoint()
+    args = ['VtGateExecute', '-json',
+            '-server', addr,
             '-tablet_type', tablet_type]
     if bindvars:
       args.extend(['-bind_variables', json.dumps(bindvars)])
@@ -619,8 +665,9 @@ class VtGate(object):
   def execute_shards(self, sql, keyspace, shards, tablet_type='master',
                      bindvars=None):
     """Uses 'vtctl VtGateExecuteShards' to execute a command."""
-    args = ['VtGateExecuteShards',
-            '-server', self.rpc_endpoint(),
+    _, addr = self.rpc_endpoint()
+    args = ['VtGateExecuteShards', '-json',
+            '-server', addr,
             '-keyspace', keyspace,
             '-shards', shards,
             '-tablet_type', tablet_type]
@@ -631,14 +678,129 @@ class VtGate(object):
 
   def split_query(self, sql, keyspace, split_count, bindvars=None):
     """Uses 'vtctl VtGateSplitQuery' to cut a query up in chunks."""
+    _, addr = self.rpc_endpoint()
     args = ['VtGateSplitQuery',
-            '-server', self.rpc_endpoint(),
+            '-server', addr,
             '-keyspace', keyspace,
             '-split_count', str(split_count)]
     if bindvars:
       args.extend(['-bind_variables', json.dumps(bindvars)])
     args.append(sql)
     return run_vtctl_json(args)
+
+  def wait_for_endpoints(self, name, count, timeout=20.0):
+    """waits until vtgate gets endpoints.
+
+    Args:
+      name: name of the endpoint, in the form: 'keyspace.shard.type'.
+      count: how many endpoints to wait for.
+      timeout: how long to wait.
+    """
+    wait_for_vars('vtgate', self.port,
+                  var=vtgate_gateway_flavor().connection_count_vars(),
+                  key=name, value=count, timeout=timeout)
+
+
+class L2VtGate(object):
+  """L2VtGate object represents a l2vtgate process."""
+
+  def __init__(self, port=None):
+    """Creates the L2VTGate instance and reserve the ports if necessary."""
+    self.port = port or environment.reserve_ports(1)
+    if protocols_flavor().vtgate_protocol() == 'grpc':
+      self.grpc_port = environment.reserve_ports(1)
+    self.proc = None
+
+  def start(self, cell='test_nj', retry_count=2,
+            topo_impl=None, cache_ttl='1s',
+            healthcheck_conn_timeout='2s',
+            extra_args=None, tablets=None,
+            tablet_types_to_wait='MASTER,REPLICA',
+            tablet_filters=None):
+    """Start l2vtgate."""
+
+    args = environment.binary_args('l2vtgate') + [
+        '-port', str(self.port),
+        '-cell', cell,
+        '-retry-count', str(retry_count),
+        '-log_dir', environment.vtlogroot,
+        '-srv_topo_cache_ttl', cache_ttl,
+        '-healthcheck_conn_timeout', healthcheck_conn_timeout,
+        '-tablet_protocol', protocols_flavor().tabletconn_protocol(),
+        '-gateway_implementation', vtgate_gateway_flavor().flavor(),
+        '-tablet_grpc_combine_begin_execute',
+    ]
+    args.extend(vtgate_gateway_flavor().flags(cell=cell, tablets=tablets))
+    if tablet_types_to_wait:
+      args.extend(['-tablet_types_to_wait', tablet_types_to_wait])
+    if tablet_filters:
+      args.extend(['-tablet_filters', tablet_filters])
+    if protocols_flavor().vtgate_protocol() == 'grpc':
+      args.extend(['-grpc_port', str(self.grpc_port)])
+    if protocols_flavor().service_map():
+      args.extend(['-service_map', ','.join(protocols_flavor().service_map())])
+    if topo_impl:
+      args.extend(['-topo_implementation', topo_impl])
+    else:
+      args.extend(environment.topo_server().flags())
+    if extra_args:
+      args.extend(extra_args)
+
+    self.proc = run_bg(args)
+    wait_for_vars('l2vtgate', self.port)
+
+  def kill(self):
+    """Terminates the l2vtgate process, and waits for it to exit.
+    """
+    if self.proc is None:
+      return
+    kill_sub_process(self.proc, soft=True)
+    self.proc.wait()
+    self.proc = None
+
+  def addr(self):
+    """Returns the address of the l2vtgate process, for web access."""
+    return 'localhost:%d' % self.port
+
+  def rpc_endpoint(self):
+    """Returns the protocol and endpoint to use for RPCs."""
+    protocol = protocols_flavor().vtgate_protocol()
+    if protocol == 'grpc':
+      return protocol, 'localhost:%d' % self.grpc_port
+    return protocol, self.addr()
+
+  def get_status(self):
+    """Returns the status page for this process."""
+    return get_status(self.port)
+
+  def get_vars(self):
+    """Returns the vars for this process."""
+    return get_vars(self.port)
+
+  def wait_for_endpoints(self, name, count, timeout=20.0):
+    """waits until l2vtgate gets endpoints.
+
+    Args:
+      name: name of the endpoint, in the form: 'keyspace.shard.type'.
+      count: how many endpoints to wait for.
+      timeout: how long to wait.
+    """
+    wait_for_vars('l2vtgate', self.port,
+                  var=vtgate_gateway_flavor().connection_count_vars(),
+                  key=name, value=count, timeout=timeout)
+
+  def verify_no_endpoint(self, name):
+    """verifies the l2vtgate doesn't have any enpoint of the given name.
+
+    Args:
+      name: name of the endpoint, in the form: 'keyspace.shard.type'.
+    """
+    poll_for_vars('l2vtgate', self.port,
+                  'no endpoint named ' + name,
+                  timeout=5.0,
+                  condition_fn=lambda v: v.get(vtgate_gateway_flavor().
+                                               connection_count_vars()).
+                  get(name, None) is None)
 
 
 # vtctl helpers
@@ -678,11 +840,16 @@ def run_vtctl(clargs, auto_log=False, expect_fail=False,
 
 def run_vtctl_vtctl(clargs, auto_log=False, expect_fail=False,
                     **kwargs):
-  args = environment.binary_args('vtctl') + ['-log_dir', environment.vtlogroot]
+  args = environment.binary_args('vtctl') + [
+      '-log_dir', environment.vtlogroot,
+      '-enable_queries',
+  ]
   args.extend(environment.topo_server().flags())
   args.extend(['-tablet_manager_protocol',
                protocols_flavor().tablet_manager_protocol()])
   args.extend(['-tablet_protocol', protocols_flavor().tabletconn_protocol()])
+  args.extend(['-throttler_client_protocol',
+               protocols_flavor().throttler_client_protocol()])
   args.extend(['-vtgate_protocol', protocols_flavor().vtgate_protocol()])
 
   if auto_log:
@@ -707,11 +874,20 @@ def run_vtctl_json(clargs, auto_log=True):
 
 def get_log_level():
   if options.verbose == 2:
-    return 'INFO'
+    return '0'
   elif options.verbose == 1:
-    return 'WARNING'
+    return '1'
   else:
-    return 'ERROR'
+    return '2'
+
+
+def set_log_level(verbose):
+  level = logging.DEBUG
+  if verbose == 0:
+    level = logging.WARNING
+  elif verbose == 1:
+    level = logging.INFO
+  logging.getLogger().setLevel(level)
 
 
 # vtworker helpers
@@ -745,13 +921,7 @@ def _get_vtworker_cmd(clargs, auto_log=False):
   rpc_port = port
   args = environment.binary_args('vtworker') + [
       '-log_dir', environment.vtlogroot,
-      '-min_healthy_rdonly_endpoints', '1',
       '-port', str(port),
-      # use a long resolve TTL because of potential race conditions with doing
-      # an EmergencyReparent and resolving the master (as EmergencyReparent
-      # will delete the old master before updating the shard record with the
-      # new master)
-      '-resolve_ttl', '10s',
       '-executefetch_retry_time', '1s',
       '-tablet_manager_protocol',
       protocols_flavor().tablet_manager_protocol(),
@@ -875,7 +1045,8 @@ def wait_db_read_only(uid):
   raise e
 
 
-def check_srv_keyspace(cell, keyspace, expected, keyspace_id_type='uint64'):
+def check_srv_keyspace(cell, keyspace, expected, keyspace_id_type='uint64',
+                       sharding_column_name='keyspace_id'):
   ks = run_vtctl_json(['GetSrvKeyspace', cell, keyspace])
   result = ''
   pmap = {}
@@ -904,7 +1075,7 @@ def check_srv_keyspace(cell, keyspace, expected, keyspace_id_type='uint64'):
         'Mismatch in srv keyspace for cell %s keyspace %s, expected:\n%'
         's\ngot:\n%s' % (
             cell, keyspace, expected, result))
-  if 'keyspace_id' != ks.get('sharding_column_name'):
+  if sharding_column_name != ks.get('sharding_column_name'):
     raise Exception('Got wrong sharding_column_name in SrvKeyspace: %s' %
                     str(ks))
   if keyspace_id_type != keyrange_constants.PROTO3_KIT_TO_STRING[
@@ -959,14 +1130,15 @@ def check_tablet_query_service(
                         tablet_vars['TabletStateName'], expected_state))
 
   status = tablet.get_status()
+  tc_dqs = 'Query Service disabled: TabletControl.DisableQueryService set'
   if tablet_control_disabled:
-    testcase.assertIn('Query Service disabled by TabletControl', status)
+    testcase.assertIn(tc_dqs, status)
   else:
-    testcase.assertNotIn('Query Service disabled by TabletControl', status)
+    testcase.assertNotIn(tc_dqs, status)
 
   if tablet.tablet_type == 'rdonly':
     # Run RunHealthCheck to be sure the tablet doesn't change its serving state.
-    run_vtctl(['RunHealthCheck', tablet.tablet_alias, 'rdonly'],
+    run_vtctl(['RunHealthCheck', tablet.tablet_alias],
               auto_log=True)
 
     tablet_vars = get_vars(tablet.port)
@@ -1032,29 +1204,26 @@ class Vtctld(object):
     if protocols_flavor().vtctl_client_protocol() == 'grpc':
       self.grpc_port = environment.reserve_ports(1)
 
-  def serving_graph(self):
-    data = json.load(
-        urllib2.urlopen(
-            'http://localhost:%d/serving_graph/test_nj?format=json' %
-            self.port))
-    if data['Errors']:
-      raise VtctldError(data['Errors'])
-    return data['Keyspaces']
-
-  def start(self):
+  def start(self, enable_schema_change_dir=False):
     args = environment.binary_args('vtctld') + [
-        '-debug',
+        '-enable_queries',
+        '-cell', 'test_nj',
         '-web_dir', environment.vttop + '/web/vtctld',
         '--log_dir', environment.vtlogroot,
         '--port', str(self.port),
-        '--schema_change_dir', self.schema_change_dir,
-        '--schema_change_controller', 'local',
-        '--schema_change_check_interval', '1',
         '-tablet_manager_protocol',
         protocols_flavor().tablet_manager_protocol(),
-        '-vtgate_protocol', protocols_flavor().vtgate_protocol(),
         '-tablet_protocol', protocols_flavor().tabletconn_protocol(),
+        '-throttler_client_protocol',
+        protocols_flavor().throttler_client_protocol(),
+        '-vtgate_protocol', protocols_flavor().vtgate_protocol(),
     ] + environment.topo_server().flags()
+    if enable_schema_change_dir:
+      args += [
+          '--schema_change_dir', self.schema_change_dir,
+          '--schema_change_controller', 'local',
+          '--schema_change_check_interval', '1',
+      ]
     if protocols_flavor().service_map():
       args.extend(['-service_map', ','.join(protocols_flavor().service_map())])
     if protocols_flavor().vtctl_client_protocol() == 'grpc':
@@ -1103,9 +1272,6 @@ class Vtctld(object):
       protocol = protocols_flavor().vtctl_client_protocol()
     rpc_port = self.port
     if protocol == 'grpc':
-      # import the grpc vtctl client implementation, change the port
-      if python:
-        from vtctl import grpc_vtctl_client  # pylint: disable=g-import-not-at-top,unused-variable
       rpc_port = self.grpc_port
     return (protocol, '%s:%d' % (socket.getfqdn(), rpc_port))
 

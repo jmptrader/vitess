@@ -17,3 +17,19 @@ function goversion_min() {
   [ "$gotminor" -lt "$wantminor" ] && return 1
   return 0
 }
+
+# prepend_path returns $2 prepended the colon separated path $1.
+# If it's already part of the path, it won't be added again.
+#
+# Note the first time it's called, the original value is empty,
+# and the second value has the path to add. We just end up adding it regardless
+# of its existence.
+function prepend_path() {
+  # $1 path variable
+  # $2 path to add
+  if [ -d "$2" ] && [[ ":$1:" != *":$2:"* ]]; then
+    echo "$2:$1"
+  else
+    echo "$1"
+  fi
+}

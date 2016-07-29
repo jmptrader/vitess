@@ -22,7 +22,7 @@ fi
 # Mirror permissions to "other" from the owning group (for which we assume it has at least rX permissions).
 chmod -R o=g .
 
-args="$args -e USER=vitess -v /dev/log:/dev/log"
+args="$args -v /dev/log:/dev/log"
 args="$args -v $PWD:/tmp/src"
 
 # Share maven dependency cache so they don't have to be redownloaded every time.
@@ -46,7 +46,7 @@ fi
 
 # Run tests
 echo "Running tests in vitess/bootstrap:$flavor image..."
-bashcmd="mv php/vendor /vt/dist/php-vendor && rm -rf * && cp -R /tmp/src/* . && ln -sf /vt/dist/php-vendor php/vendor && rm -rf Godeps/_workspace/pkg && $cmd"
+bashcmd="mv php/vendor /vt/dist/php-vendor && mv vendor /vt/dist/go-vendor && rm -rf * && mkdir php && mv /vt/dist/php-vendor php/vendor && mv /vt/dist/go-vendor vendor && cp -R /tmp/src/* . && rm -rf Godeps/_workspace/pkg && $cmd"
 
 if tty -s; then
   # interactive shell

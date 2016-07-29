@@ -12,7 +12,7 @@ level. In particular, it cannot depend on:
 
 topotools is used by wrangler, so it ends up in all tools using
 wrangler (vtctl, vtctld, ...). It is also included by vttablet, so it contains:
-- most of the logic to rebuild a shard serving graph (helthcheck module)
+- most of the logic to create a shard / keyspace (tablet's init code)
 - some of the logic to perform a TabletExternallyReparented (RPC call
   to master vttablet to let it know it's the master).
 
@@ -44,33 +44,14 @@ func ConfigureTabletHook(hk *hook.Hook, tabletAlias *topodatapb.TabletAlias) {
 	hk.ExtraEnv["TABLET_ALIAS"] = topoproto.TabletAliasString(tabletAlias)
 }
 
-// changeType is a single iteration of the update loop for ChangeType().
-func changeType(tablet *topodatapb.Tablet, newType topodatapb.TabletType, health map[string]string) error {
-	if !topo.IsTrivialTypeChange(tablet.Type, newType) {
-		return fmt.Errorf("cannot change tablet type %v -> %v for %v", tablet.Type, newType, tablet.Alias)
-	}
-
-	tablet.Type = newType
-	if health != nil {
-		if len(health) == 0 {
-			tablet.HealthMap = nil
-		} else {
-			tablet.HealthMap = health
-		}
-	}
-	return nil
-}
-
-// ChangeType changes the type of the tablet and possibly also updates
-// the health information for it. Make this external, since these
+// ChangeType changes the type of the tablet. Make this external, since these
 // transitions need to be forced from time to time.
 //
-// - if health is nil, we don't touch the Tablet's Health record.
-// - if health is an empty map, we clear the Tablet's Health record.
-// - if health has values, we overwrite the Tablet's Health record.
-func ChangeType(ctx context.Context, ts topo.Server, tabletAlias *topodatapb.TabletAlias, newType topodatapb.TabletType, health map[string]string) error {
+// If successful, the updated tablet record is returned.
+func ChangeType(ctx context.Context, ts topo.Server, tabletAlias *topodatapb.TabletAlias, newType topodatapb.TabletType) (*topodatapb.Tablet, error) {
 	return ts.UpdateTabletFields(ctx, tabletAlias, func(tablet *topodatapb.Tablet) error {
-		return changeType(tablet, newType, health)
+		tablet.Type = newType
+		return nil
 	})
 }
 
@@ -79,14 +60,16 @@ func ChangeType(ctx context.Context, ts topo.Server, tabletAlias *topodatapb.Tab
 //
 // Note that oldTablet is only used for its Alias, and to call CheckOwnership().
 // Other fields in oldTablet have no effect on the update, which will read the
-// latest tablet record before setting the type and health info (just like
-// ChangeType() does).
-func ChangeOwnType(ctx context.Context, ts topo.Server, oldTablet *topodatapb.Tablet, newType topodatapb.TabletType, health map[string]string) error {
+// latest tablet record before setting the type (just like ChangeType() does).
+//
+// If successful, the updated tablet record is returned.
+func ChangeOwnType(ctx context.Context, ts topo.Server, oldTablet *topodatapb.Tablet, newType topodatapb.TabletType) (*topodatapb.Tablet, error) {
 	return ts.UpdateTabletFields(ctx, oldTablet.Alias, func(tablet *topodatapb.Tablet) error {
 		if err := CheckOwnership(oldTablet, tablet); err != nil {
 			return err
 		}
-		return changeType(tablet, newType, health)
+		tablet.Type = newType
+		return nil
 	})
 }
 

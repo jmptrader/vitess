@@ -11,6 +11,7 @@ It is generated from these files:
 It has these top-level messages:
 	TableDefinition
 	SchemaDefinition
+	SchemaChangeResult
 	UserPermission
 	DbPermission
 	Permissions
@@ -35,6 +36,8 @@ It has these top-level messages:
 	RefreshStateResponse
 	RunHealthCheckRequest
 	RunHealthCheckResponse
+	IgnoreHealthErrorRequest
+	IgnoreHealthErrorResponse
 	ReloadSchemaRequest
 	ReloadSchemaResponse
 	PreflightSchemaRequest
@@ -93,6 +96,8 @@ It has these top-level messages:
 	PromoteSlaveResponse
 	BackupRequest
 	BackupResponse
+	RestoreFromBackupRequest
+	RestoreFromBackupResponse
 */
 package tabletmanagerdata
 
@@ -109,6 +114,12 @@ var _ = proto.Marshal
 var _ = fmt.Errorf
 var _ = math.Inf
 
+// This is a compile-time assertion to ensure that this generated file
+// is compatible with the proto package it is being compiled against.
+// A compilation error at this line likely means your copy of the
+// proto package needs to be updated.
+const _ = proto.ProtoPackageIsVersion2 // please upgrade the proto package
+
 type TableDefinition struct {
 	// the table name
 	Name string `protobuf:"bytes,1,opt,name=name" json:"name,omitempty"`
@@ -117,13 +128,13 @@ type TableDefinition struct {
 	// the columns in the order that will be used to dump and load the data
 	Columns []string `protobuf:"bytes,3,rep,name=columns" json:"columns,omitempty"`
 	// the primary key columns in the primary key order
-	PrimaryKeyColumns []string `protobuf:"bytes,4,rep,name=primary_key_columns" json:"primary_key_columns,omitempty"`
+	PrimaryKeyColumns []string `protobuf:"bytes,4,rep,name=primary_key_columns,json=primaryKeyColumns" json:"primary_key_columns,omitempty"`
 	// type is either mysqlctl.TableBaseTable or mysqlctl.TableView
 	Type string `protobuf:"bytes,5,opt,name=type" json:"type,omitempty"`
 	// how much space the data file takes.
-	DataLength uint64 `protobuf:"varint,6,opt,name=data_length" json:"data_length,omitempty"`
+	DataLength uint64 `protobuf:"varint,6,opt,name=data_length,json=dataLength" json:"data_length,omitempty"`
 	// approximate number of rows
-	RowCount uint64 `protobuf:"varint,7,opt,name=row_count" json:"row_count,omitempty"`
+	RowCount uint64 `protobuf:"varint,7,opt,name=row_count,json=rowCount" json:"row_count,omitempty"`
 }
 
 func (m *TableDefinition) Reset()                    { *m = TableDefinition{} }
@@ -132,8 +143,8 @@ func (*TableDefinition) ProtoMessage()               {}
 func (*TableDefinition) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{0} }
 
 type SchemaDefinition struct {
-	DatabaseSchema   string             `protobuf:"bytes,1,opt,name=database_schema" json:"database_schema,omitempty"`
-	TableDefinitions []*TableDefinition `protobuf:"bytes,2,rep,name=table_definitions" json:"table_definitions,omitempty"`
+	DatabaseSchema   string             `protobuf:"bytes,1,opt,name=database_schema,json=databaseSchema" json:"database_schema,omitempty"`
+	TableDefinitions []*TableDefinition `protobuf:"bytes,2,rep,name=table_definitions,json=tableDefinitions" json:"table_definitions,omitempty"`
 	Version          string             `protobuf:"bytes,3,opt,name=version" json:"version,omitempty"`
 }
 
@@ -149,20 +160,46 @@ func (m *SchemaDefinition) GetTableDefinitions() []*TableDefinition {
 	return nil
 }
 
+type SchemaChangeResult struct {
+	// before_schema holds the schema before each change.
+	BeforeSchema *SchemaDefinition `protobuf:"bytes,1,opt,name=before_schema,json=beforeSchema" json:"before_schema,omitempty"`
+	// after_schema holds the schema after each change.
+	AfterSchema *SchemaDefinition `protobuf:"bytes,2,opt,name=after_schema,json=afterSchema" json:"after_schema,omitempty"`
+}
+
+func (m *SchemaChangeResult) Reset()                    { *m = SchemaChangeResult{} }
+func (m *SchemaChangeResult) String() string            { return proto.CompactTextString(m) }
+func (*SchemaChangeResult) ProtoMessage()               {}
+func (*SchemaChangeResult) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{2} }
+
+func (m *SchemaChangeResult) GetBeforeSchema() *SchemaDefinition {
+	if m != nil {
+		return m.BeforeSchema
+	}
+	return nil
+}
+
+func (m *SchemaChangeResult) GetAfterSchema() *SchemaDefinition {
+	if m != nil {
+		return m.AfterSchema
+	}
+	return nil
+}
+
 // UserPermission describes a single row in the mysql.user table
 // Primary key is Host+User
 // PasswordChecksum is the crc64 of the password, for security reasons
 type UserPermission struct {
 	Host             string            `protobuf:"bytes,1,opt,name=host" json:"host,omitempty"`
 	User             string            `protobuf:"bytes,2,opt,name=user" json:"user,omitempty"`
-	PasswordChecksum uint64            `protobuf:"varint,3,opt,name=password_checksum" json:"password_checksum,omitempty"`
+	PasswordChecksum uint64            `protobuf:"varint,3,opt,name=password_checksum,json=passwordChecksum" json:"password_checksum,omitempty"`
 	Privileges       map[string]string `protobuf:"bytes,4,rep,name=privileges" json:"privileges,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 }
 
 func (m *UserPermission) Reset()                    { *m = UserPermission{} }
 func (m *UserPermission) String() string            { return proto.CompactTextString(m) }
 func (*UserPermission) ProtoMessage()               {}
-func (*UserPermission) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{2} }
+func (*UserPermission) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{3} }
 
 func (m *UserPermission) GetPrivileges() map[string]string {
 	if m != nil {
@@ -183,7 +220,7 @@ type DbPermission struct {
 func (m *DbPermission) Reset()                    { *m = DbPermission{} }
 func (m *DbPermission) String() string            { return proto.CompactTextString(m) }
 func (*DbPermission) ProtoMessage()               {}
-func (*DbPermission) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{3} }
+func (*DbPermission) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{4} }
 
 func (m *DbPermission) GetPrivileges() map[string]string {
 	if m != nil {
@@ -195,14 +232,14 @@ func (m *DbPermission) GetPrivileges() map[string]string {
 // Permissions have all the rows in mysql.{user,db} tables,
 // (all rows are sorted by primary key)
 type Permissions struct {
-	UserPermissions []*UserPermission `protobuf:"bytes,1,rep,name=user_permissions" json:"user_permissions,omitempty"`
-	DbPermissions   []*DbPermission   `protobuf:"bytes,2,rep,name=db_permissions" json:"db_permissions,omitempty"`
+	UserPermissions []*UserPermission `protobuf:"bytes,1,rep,name=user_permissions,json=userPermissions" json:"user_permissions,omitempty"`
+	DbPermissions   []*DbPermission   `protobuf:"bytes,2,rep,name=db_permissions,json=dbPermissions" json:"db_permissions,omitempty"`
 }
 
 func (m *Permissions) Reset()                    { *m = Permissions{} }
 func (m *Permissions) String() string            { return proto.CompactTextString(m) }
 func (*Permissions) ProtoMessage()               {}
-func (*Permissions) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{4} }
+func (*Permissions) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{5} }
 
 func (m *Permissions) GetUserPermissions() []*UserPermission {
 	if m != nil {
@@ -227,7 +264,7 @@ type BlpPosition struct {
 func (m *BlpPosition) Reset()                    { *m = BlpPosition{} }
 func (m *BlpPosition) String() string            { return proto.CompactTextString(m) }
 func (*BlpPosition) ProtoMessage()               {}
-func (*BlpPosition) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{5} }
+func (*BlpPosition) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{6} }
 
 type PingRequest struct {
 	Payload string `protobuf:"bytes,1,opt,name=payload" json:"payload,omitempty"`
@@ -236,7 +273,7 @@ type PingRequest struct {
 func (m *PingRequest) Reset()                    { *m = PingRequest{} }
 func (m *PingRequest) String() string            { return proto.CompactTextString(m) }
 func (*PingRequest) ProtoMessage()               {}
-func (*PingRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{6} }
+func (*PingRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{7} }
 
 type PingResponse struct {
 	Payload string `protobuf:"bytes,1,opt,name=payload" json:"payload,omitempty"`
@@ -245,7 +282,7 @@ type PingResponse struct {
 func (m *PingResponse) Reset()                    { *m = PingResponse{} }
 func (m *PingResponse) String() string            { return proto.CompactTextString(m) }
 func (*PingResponse) ProtoMessage()               {}
-func (*PingResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{7} }
+func (*PingResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{8} }
 
 type SleepRequest struct {
 	// duration is in nanoseconds
@@ -255,7 +292,7 @@ type SleepRequest struct {
 func (m *SleepRequest) Reset()                    { *m = SleepRequest{} }
 func (m *SleepRequest) String() string            { return proto.CompactTextString(m) }
 func (*SleepRequest) ProtoMessage()               {}
-func (*SleepRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{8} }
+func (*SleepRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{9} }
 
 type SleepResponse struct {
 }
@@ -263,18 +300,18 @@ type SleepResponse struct {
 func (m *SleepResponse) Reset()                    { *m = SleepResponse{} }
 func (m *SleepResponse) String() string            { return proto.CompactTextString(m) }
 func (*SleepResponse) ProtoMessage()               {}
-func (*SleepResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{9} }
+func (*SleepResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{10} }
 
 type ExecuteHookRequest struct {
 	Name       string            `protobuf:"bytes,1,opt,name=name" json:"name,omitempty"`
 	Parameters []string          `protobuf:"bytes,2,rep,name=parameters" json:"parameters,omitempty"`
-	ExtraEnv   map[string]string `protobuf:"bytes,3,rep,name=extra_env" json:"extra_env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	ExtraEnv   map[string]string `protobuf:"bytes,3,rep,name=extra_env,json=extraEnv" json:"extra_env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 }
 
 func (m *ExecuteHookRequest) Reset()                    { *m = ExecuteHookRequest{} }
 func (m *ExecuteHookRequest) String() string            { return proto.CompactTextString(m) }
 func (*ExecuteHookRequest) ProtoMessage()               {}
-func (*ExecuteHookRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{10} }
+func (*ExecuteHookRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{11} }
 
 func (m *ExecuteHookRequest) GetExtraEnv() map[string]string {
 	if m != nil {
@@ -284,7 +321,7 @@ func (m *ExecuteHookRequest) GetExtraEnv() map[string]string {
 }
 
 type ExecuteHookResponse struct {
-	ExitStatus int64  `protobuf:"varint,1,opt,name=exit_status" json:"exit_status,omitempty"`
+	ExitStatus int64  `protobuf:"varint,1,opt,name=exit_status,json=exitStatus" json:"exit_status,omitempty"`
 	Stdout     string `protobuf:"bytes,2,opt,name=stdout" json:"stdout,omitempty"`
 	Stderr     string `protobuf:"bytes,3,opt,name=stderr" json:"stderr,omitempty"`
 }
@@ -292,27 +329,27 @@ type ExecuteHookResponse struct {
 func (m *ExecuteHookResponse) Reset()                    { *m = ExecuteHookResponse{} }
 func (m *ExecuteHookResponse) String() string            { return proto.CompactTextString(m) }
 func (*ExecuteHookResponse) ProtoMessage()               {}
-func (*ExecuteHookResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{11} }
+func (*ExecuteHookResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{12} }
 
 type GetSchemaRequest struct {
 	Tables        []string `protobuf:"bytes,1,rep,name=tables" json:"tables,omitempty"`
-	IncludeViews  bool     `protobuf:"varint,2,opt,name=include_views" json:"include_views,omitempty"`
-	ExcludeTables []string `protobuf:"bytes,3,rep,name=exclude_tables" json:"exclude_tables,omitempty"`
+	IncludeViews  bool     `protobuf:"varint,2,opt,name=include_views,json=includeViews" json:"include_views,omitempty"`
+	ExcludeTables []string `protobuf:"bytes,3,rep,name=exclude_tables,json=excludeTables" json:"exclude_tables,omitempty"`
 }
 
 func (m *GetSchemaRequest) Reset()                    { *m = GetSchemaRequest{} }
 func (m *GetSchemaRequest) String() string            { return proto.CompactTextString(m) }
 func (*GetSchemaRequest) ProtoMessage()               {}
-func (*GetSchemaRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{12} }
+func (*GetSchemaRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{13} }
 
 type GetSchemaResponse struct {
-	SchemaDefinition *SchemaDefinition `protobuf:"bytes,1,opt,name=schema_definition" json:"schema_definition,omitempty"`
+	SchemaDefinition *SchemaDefinition `protobuf:"bytes,1,opt,name=schema_definition,json=schemaDefinition" json:"schema_definition,omitempty"`
 }
 
 func (m *GetSchemaResponse) Reset()                    { *m = GetSchemaResponse{} }
 func (m *GetSchemaResponse) String() string            { return proto.CompactTextString(m) }
 func (*GetSchemaResponse) ProtoMessage()               {}
-func (*GetSchemaResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{13} }
+func (*GetSchemaResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{14} }
 
 func (m *GetSchemaResponse) GetSchemaDefinition() *SchemaDefinition {
 	if m != nil {
@@ -327,7 +364,7 @@ type GetPermissionsRequest struct {
 func (m *GetPermissionsRequest) Reset()                    { *m = GetPermissionsRequest{} }
 func (m *GetPermissionsRequest) String() string            { return proto.CompactTextString(m) }
 func (*GetPermissionsRequest) ProtoMessage()               {}
-func (*GetPermissionsRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{14} }
+func (*GetPermissionsRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{15} }
 
 type GetPermissionsResponse struct {
 	Permissions *Permissions `protobuf:"bytes,1,opt,name=permissions" json:"permissions,omitempty"`
@@ -336,7 +373,7 @@ type GetPermissionsResponse struct {
 func (m *GetPermissionsResponse) Reset()                    { *m = GetPermissionsResponse{} }
 func (m *GetPermissionsResponse) String() string            { return proto.CompactTextString(m) }
 func (*GetPermissionsResponse) ProtoMessage()               {}
-func (*GetPermissionsResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{15} }
+func (*GetPermissionsResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{16} }
 
 func (m *GetPermissionsResponse) GetPermissions() *Permissions {
 	if m != nil {
@@ -351,7 +388,7 @@ type SetReadOnlyRequest struct {
 func (m *SetReadOnlyRequest) Reset()                    { *m = SetReadOnlyRequest{} }
 func (m *SetReadOnlyRequest) String() string            { return proto.CompactTextString(m) }
 func (*SetReadOnlyRequest) ProtoMessage()               {}
-func (*SetReadOnlyRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{16} }
+func (*SetReadOnlyRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{17} }
 
 type SetReadOnlyResponse struct {
 }
@@ -359,7 +396,7 @@ type SetReadOnlyResponse struct {
 func (m *SetReadOnlyResponse) Reset()                    { *m = SetReadOnlyResponse{} }
 func (m *SetReadOnlyResponse) String() string            { return proto.CompactTextString(m) }
 func (*SetReadOnlyResponse) ProtoMessage()               {}
-func (*SetReadOnlyResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{17} }
+func (*SetReadOnlyResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{18} }
 
 type SetReadWriteRequest struct {
 }
@@ -367,7 +404,7 @@ type SetReadWriteRequest struct {
 func (m *SetReadWriteRequest) Reset()                    { *m = SetReadWriteRequest{} }
 func (m *SetReadWriteRequest) String() string            { return proto.CompactTextString(m) }
 func (*SetReadWriteRequest) ProtoMessage()               {}
-func (*SetReadWriteRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{18} }
+func (*SetReadWriteRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{19} }
 
 type SetReadWriteResponse struct {
 }
@@ -375,16 +412,16 @@ type SetReadWriteResponse struct {
 func (m *SetReadWriteResponse) Reset()                    { *m = SetReadWriteResponse{} }
 func (m *SetReadWriteResponse) String() string            { return proto.CompactTextString(m) }
 func (*SetReadWriteResponse) ProtoMessage()               {}
-func (*SetReadWriteResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{19} }
+func (*SetReadWriteResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{20} }
 
 type ChangeTypeRequest struct {
-	TabletType topodata.TabletType `protobuf:"varint,1,opt,name=tablet_type,enum=topodata.TabletType" json:"tablet_type,omitempty"`
+	TabletType topodata.TabletType `protobuf:"varint,1,opt,name=tablet_type,json=tabletType,enum=topodata.TabletType" json:"tablet_type,omitempty"`
 }
 
 func (m *ChangeTypeRequest) Reset()                    { *m = ChangeTypeRequest{} }
 func (m *ChangeTypeRequest) String() string            { return proto.CompactTextString(m) }
 func (*ChangeTypeRequest) ProtoMessage()               {}
-func (*ChangeTypeRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{20} }
+func (*ChangeTypeRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{21} }
 
 type ChangeTypeResponse struct {
 }
@@ -392,7 +429,7 @@ type ChangeTypeResponse struct {
 func (m *ChangeTypeResponse) Reset()                    { *m = ChangeTypeResponse{} }
 func (m *ChangeTypeResponse) String() string            { return proto.CompactTextString(m) }
 func (*ChangeTypeResponse) ProtoMessage()               {}
-func (*ChangeTypeResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{21} }
+func (*ChangeTypeResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{22} }
 
 type RefreshStateRequest struct {
 }
@@ -400,7 +437,7 @@ type RefreshStateRequest struct {
 func (m *RefreshStateRequest) Reset()                    { *m = RefreshStateRequest{} }
 func (m *RefreshStateRequest) String() string            { return proto.CompactTextString(m) }
 func (*RefreshStateRequest) ProtoMessage()               {}
-func (*RefreshStateRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{22} }
+func (*RefreshStateRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{23} }
 
 type RefreshStateResponse struct {
 }
@@ -408,16 +445,15 @@ type RefreshStateResponse struct {
 func (m *RefreshStateResponse) Reset()                    { *m = RefreshStateResponse{} }
 func (m *RefreshStateResponse) String() string            { return proto.CompactTextString(m) }
 func (*RefreshStateResponse) ProtoMessage()               {}
-func (*RefreshStateResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{23} }
+func (*RefreshStateResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{24} }
 
 type RunHealthCheckRequest struct {
-	TabletType topodata.TabletType `protobuf:"varint,1,opt,name=tablet_type,enum=topodata.TabletType" json:"tablet_type,omitempty"`
 }
 
 func (m *RunHealthCheckRequest) Reset()                    { *m = RunHealthCheckRequest{} }
 func (m *RunHealthCheckRequest) String() string            { return proto.CompactTextString(m) }
 func (*RunHealthCheckRequest) ProtoMessage()               {}
-func (*RunHealthCheckRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{24} }
+func (*RunHealthCheckRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{25} }
 
 type RunHealthCheckResponse struct {
 }
@@ -425,15 +461,36 @@ type RunHealthCheckResponse struct {
 func (m *RunHealthCheckResponse) Reset()                    { *m = RunHealthCheckResponse{} }
 func (m *RunHealthCheckResponse) String() string            { return proto.CompactTextString(m) }
 func (*RunHealthCheckResponse) ProtoMessage()               {}
-func (*RunHealthCheckResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{25} }
+func (*RunHealthCheckResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{26} }
+
+type IgnoreHealthErrorRequest struct {
+	Pattern string `protobuf:"bytes,1,opt,name=pattern" json:"pattern,omitempty"`
+}
+
+func (m *IgnoreHealthErrorRequest) Reset()                    { *m = IgnoreHealthErrorRequest{} }
+func (m *IgnoreHealthErrorRequest) String() string            { return proto.CompactTextString(m) }
+func (*IgnoreHealthErrorRequest) ProtoMessage()               {}
+func (*IgnoreHealthErrorRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{27} }
+
+type IgnoreHealthErrorResponse struct {
+}
+
+func (m *IgnoreHealthErrorResponse) Reset()                    { *m = IgnoreHealthErrorResponse{} }
+func (m *IgnoreHealthErrorResponse) String() string            { return proto.CompactTextString(m) }
+func (*IgnoreHealthErrorResponse) ProtoMessage()               {}
+func (*IgnoreHealthErrorResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{28} }
 
 type ReloadSchemaRequest struct {
+	// wait_position allows scheduling a schema reload to occur after a
+	// given DDL has replicated to this slave, by specifying a replication
+	// position to wait for. Leave empty to trigger the reload immediately.
+	WaitPosition string `protobuf:"bytes,1,opt,name=wait_position,json=waitPosition" json:"wait_position,omitempty"`
 }
 
 func (m *ReloadSchemaRequest) Reset()                    { *m = ReloadSchemaRequest{} }
 func (m *ReloadSchemaRequest) String() string            { return proto.CompactTextString(m) }
 func (*ReloadSchemaRequest) ProtoMessage()               {}
-func (*ReloadSchemaRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{26} }
+func (*ReloadSchemaRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{29} }
 
 type ReloadSchemaResponse struct {
 }
@@ -441,37 +498,31 @@ type ReloadSchemaResponse struct {
 func (m *ReloadSchemaResponse) Reset()                    { *m = ReloadSchemaResponse{} }
 func (m *ReloadSchemaResponse) String() string            { return proto.CompactTextString(m) }
 func (*ReloadSchemaResponse) ProtoMessage()               {}
-func (*ReloadSchemaResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{27} }
+func (*ReloadSchemaResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{30} }
 
 type PreflightSchemaRequest struct {
-	Change string `protobuf:"bytes,1,opt,name=change" json:"change,omitempty"`
+	Changes []string `protobuf:"bytes,1,rep,name=changes" json:"changes,omitempty"`
 }
 
 func (m *PreflightSchemaRequest) Reset()                    { *m = PreflightSchemaRequest{} }
 func (m *PreflightSchemaRequest) String() string            { return proto.CompactTextString(m) }
 func (*PreflightSchemaRequest) ProtoMessage()               {}
-func (*PreflightSchemaRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{28} }
+func (*PreflightSchemaRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{31} }
 
 type PreflightSchemaResponse struct {
-	BeforeSchema *SchemaDefinition `protobuf:"bytes,1,opt,name=before_schema" json:"before_schema,omitempty"`
-	AfterSchema  *SchemaDefinition `protobuf:"bytes,2,opt,name=after_schema" json:"after_schema,omitempty"`
+	// change_results has for each change the schema before and after it.
+	// The number of elements is identical to the length of "changes" in the request.
+	ChangeResults []*SchemaChangeResult `protobuf:"bytes,1,rep,name=change_results,json=changeResults" json:"change_results,omitempty"`
 }
 
 func (m *PreflightSchemaResponse) Reset()                    { *m = PreflightSchemaResponse{} }
 func (m *PreflightSchemaResponse) String() string            { return proto.CompactTextString(m) }
 func (*PreflightSchemaResponse) ProtoMessage()               {}
-func (*PreflightSchemaResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{29} }
+func (*PreflightSchemaResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{32} }
 
-func (m *PreflightSchemaResponse) GetBeforeSchema() *SchemaDefinition {
+func (m *PreflightSchemaResponse) GetChangeResults() []*SchemaChangeResult {
 	if m != nil {
-		return m.BeforeSchema
-	}
-	return nil
-}
-
-func (m *PreflightSchemaResponse) GetAfterSchema() *SchemaDefinition {
-	if m != nil {
-		return m.AfterSchema
+		return m.ChangeResults
 	}
 	return nil
 }
@@ -479,15 +530,15 @@ func (m *PreflightSchemaResponse) GetAfterSchema() *SchemaDefinition {
 type ApplySchemaRequest struct {
 	Sql              string            `protobuf:"bytes,1,opt,name=sql" json:"sql,omitempty"`
 	Force            bool              `protobuf:"varint,2,opt,name=force" json:"force,omitempty"`
-	AllowReplication bool              `protobuf:"varint,3,opt,name=allow_replication" json:"allow_replication,omitempty"`
-	BeforeSchema     *SchemaDefinition `protobuf:"bytes,4,opt,name=before_schema" json:"before_schema,omitempty"`
-	AfterSchema      *SchemaDefinition `protobuf:"bytes,5,opt,name=after_schema" json:"after_schema,omitempty"`
+	AllowReplication bool              `protobuf:"varint,3,opt,name=allow_replication,json=allowReplication" json:"allow_replication,omitempty"`
+	BeforeSchema     *SchemaDefinition `protobuf:"bytes,4,opt,name=before_schema,json=beforeSchema" json:"before_schema,omitempty"`
+	AfterSchema      *SchemaDefinition `protobuf:"bytes,5,opt,name=after_schema,json=afterSchema" json:"after_schema,omitempty"`
 }
 
 func (m *ApplySchemaRequest) Reset()                    { *m = ApplySchemaRequest{} }
 func (m *ApplySchemaRequest) String() string            { return proto.CompactTextString(m) }
 func (*ApplySchemaRequest) ProtoMessage()               {}
-func (*ApplySchemaRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{30} }
+func (*ApplySchemaRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{33} }
 
 func (m *ApplySchemaRequest) GetBeforeSchema() *SchemaDefinition {
 	if m != nil {
@@ -504,14 +555,14 @@ func (m *ApplySchemaRequest) GetAfterSchema() *SchemaDefinition {
 }
 
 type ApplySchemaResponse struct {
-	BeforeSchema *SchemaDefinition `protobuf:"bytes,1,opt,name=before_schema" json:"before_schema,omitempty"`
-	AfterSchema  *SchemaDefinition `protobuf:"bytes,2,opt,name=after_schema" json:"after_schema,omitempty"`
+	BeforeSchema *SchemaDefinition `protobuf:"bytes,1,opt,name=before_schema,json=beforeSchema" json:"before_schema,omitempty"`
+	AfterSchema  *SchemaDefinition `protobuf:"bytes,2,opt,name=after_schema,json=afterSchema" json:"after_schema,omitempty"`
 }
 
 func (m *ApplySchemaResponse) Reset()                    { *m = ApplySchemaResponse{} }
 func (m *ApplySchemaResponse) String() string            { return proto.CompactTextString(m) }
 func (*ApplySchemaResponse) ProtoMessage()               {}
-func (*ApplySchemaResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{31} }
+func (*ApplySchemaResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{34} }
 
 func (m *ApplySchemaResponse) GetBeforeSchema() *SchemaDefinition {
 	if m != nil {
@@ -528,18 +579,17 @@ func (m *ApplySchemaResponse) GetAfterSchema() *SchemaDefinition {
 }
 
 type ExecuteFetchAsDbaRequest struct {
-	Query          string `protobuf:"bytes,1,opt,name=query" json:"query,omitempty"`
-	DbName         string `protobuf:"bytes,2,opt,name=db_name" json:"db_name,omitempty"`
-	MaxRows        uint64 `protobuf:"varint,3,opt,name=max_rows" json:"max_rows,omitempty"`
-	WantFields     bool   `protobuf:"varint,4,opt,name=want_fields" json:"want_fields,omitempty"`
-	DisableBinlogs bool   `protobuf:"varint,5,opt,name=disable_binlogs" json:"disable_binlogs,omitempty"`
-	ReloadSchema   bool   `protobuf:"varint,6,opt,name=reload_schema" json:"reload_schema,omitempty"`
+	Query          []byte `protobuf:"bytes,1,opt,name=query,proto3" json:"query,omitempty"`
+	DbName         string `protobuf:"bytes,2,opt,name=db_name,json=dbName" json:"db_name,omitempty"`
+	MaxRows        uint64 `protobuf:"varint,3,opt,name=max_rows,json=maxRows" json:"max_rows,omitempty"`
+	DisableBinlogs bool   `protobuf:"varint,4,opt,name=disable_binlogs,json=disableBinlogs" json:"disable_binlogs,omitempty"`
+	ReloadSchema   bool   `protobuf:"varint,5,opt,name=reload_schema,json=reloadSchema" json:"reload_schema,omitempty"`
 }
 
 func (m *ExecuteFetchAsDbaRequest) Reset()                    { *m = ExecuteFetchAsDbaRequest{} }
 func (m *ExecuteFetchAsDbaRequest) String() string            { return proto.CompactTextString(m) }
 func (*ExecuteFetchAsDbaRequest) ProtoMessage()               {}
-func (*ExecuteFetchAsDbaRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{32} }
+func (*ExecuteFetchAsDbaRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{35} }
 
 type ExecuteFetchAsDbaResponse struct {
 	Result *query.QueryResult `protobuf:"bytes,1,opt,name=result" json:"result,omitempty"`
@@ -548,7 +598,7 @@ type ExecuteFetchAsDbaResponse struct {
 func (m *ExecuteFetchAsDbaResponse) Reset()                    { *m = ExecuteFetchAsDbaResponse{} }
 func (m *ExecuteFetchAsDbaResponse) String() string            { return proto.CompactTextString(m) }
 func (*ExecuteFetchAsDbaResponse) ProtoMessage()               {}
-func (*ExecuteFetchAsDbaResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{33} }
+func (*ExecuteFetchAsDbaResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{36} }
 
 func (m *ExecuteFetchAsDbaResponse) GetResult() *query.QueryResult {
 	if m != nil {
@@ -558,15 +608,14 @@ func (m *ExecuteFetchAsDbaResponse) GetResult() *query.QueryResult {
 }
 
 type ExecuteFetchAsAppRequest struct {
-	Query      string `protobuf:"bytes,1,opt,name=query" json:"query,omitempty"`
-	MaxRows    uint64 `protobuf:"varint,2,opt,name=max_rows" json:"max_rows,omitempty"`
-	WantFields bool   `protobuf:"varint,3,opt,name=want_fields" json:"want_fields,omitempty"`
+	Query   []byte `protobuf:"bytes,1,opt,name=query,proto3" json:"query,omitempty"`
+	MaxRows uint64 `protobuf:"varint,2,opt,name=max_rows,json=maxRows" json:"max_rows,omitempty"`
 }
 
 func (m *ExecuteFetchAsAppRequest) Reset()                    { *m = ExecuteFetchAsAppRequest{} }
 func (m *ExecuteFetchAsAppRequest) String() string            { return proto.CompactTextString(m) }
 func (*ExecuteFetchAsAppRequest) ProtoMessage()               {}
-func (*ExecuteFetchAsAppRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{34} }
+func (*ExecuteFetchAsAppRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{37} }
 
 type ExecuteFetchAsAppResponse struct {
 	Result *query.QueryResult `protobuf:"bytes,1,opt,name=result" json:"result,omitempty"`
@@ -575,7 +624,7 @@ type ExecuteFetchAsAppResponse struct {
 func (m *ExecuteFetchAsAppResponse) Reset()                    { *m = ExecuteFetchAsAppResponse{} }
 func (m *ExecuteFetchAsAppResponse) String() string            { return proto.CompactTextString(m) }
 func (*ExecuteFetchAsAppResponse) ProtoMessage()               {}
-func (*ExecuteFetchAsAppResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{35} }
+func (*ExecuteFetchAsAppResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{38} }
 
 func (m *ExecuteFetchAsAppResponse) GetResult() *query.QueryResult {
 	if m != nil {
@@ -590,7 +639,7 @@ type SlaveStatusRequest struct {
 func (m *SlaveStatusRequest) Reset()                    { *m = SlaveStatusRequest{} }
 func (m *SlaveStatusRequest) String() string            { return proto.CompactTextString(m) }
 func (*SlaveStatusRequest) ProtoMessage()               {}
-func (*SlaveStatusRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{36} }
+func (*SlaveStatusRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{39} }
 
 type SlaveStatusResponse struct {
 	Status *replicationdata.Status `protobuf:"bytes,1,opt,name=status" json:"status,omitempty"`
@@ -599,7 +648,7 @@ type SlaveStatusResponse struct {
 func (m *SlaveStatusResponse) Reset()                    { *m = SlaveStatusResponse{} }
 func (m *SlaveStatusResponse) String() string            { return proto.CompactTextString(m) }
 func (*SlaveStatusResponse) ProtoMessage()               {}
-func (*SlaveStatusResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{37} }
+func (*SlaveStatusResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{40} }
 
 func (m *SlaveStatusResponse) GetStatus() *replicationdata.Status {
 	if m != nil {
@@ -614,7 +663,7 @@ type MasterPositionRequest struct {
 func (m *MasterPositionRequest) Reset()                    { *m = MasterPositionRequest{} }
 func (m *MasterPositionRequest) String() string            { return proto.CompactTextString(m) }
 func (*MasterPositionRequest) ProtoMessage()               {}
-func (*MasterPositionRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{38} }
+func (*MasterPositionRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{41} }
 
 type MasterPositionResponse struct {
 	Position string `protobuf:"bytes,1,opt,name=position" json:"position,omitempty"`
@@ -623,7 +672,7 @@ type MasterPositionResponse struct {
 func (m *MasterPositionResponse) Reset()                    { *m = MasterPositionResponse{} }
 func (m *MasterPositionResponse) String() string            { return proto.CompactTextString(m) }
 func (*MasterPositionResponse) ProtoMessage()               {}
-func (*MasterPositionResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{39} }
+func (*MasterPositionResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{42} }
 
 type StopSlaveRequest struct {
 }
@@ -631,7 +680,7 @@ type StopSlaveRequest struct {
 func (m *StopSlaveRequest) Reset()                    { *m = StopSlaveRequest{} }
 func (m *StopSlaveRequest) String() string            { return proto.CompactTextString(m) }
 func (*StopSlaveRequest) ProtoMessage()               {}
-func (*StopSlaveRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{40} }
+func (*StopSlaveRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{43} }
 
 type StopSlaveResponse struct {
 }
@@ -639,17 +688,17 @@ type StopSlaveResponse struct {
 func (m *StopSlaveResponse) Reset()                    { *m = StopSlaveResponse{} }
 func (m *StopSlaveResponse) String() string            { return proto.CompactTextString(m) }
 func (*StopSlaveResponse) ProtoMessage()               {}
-func (*StopSlaveResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{41} }
+func (*StopSlaveResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{44} }
 
 type StopSlaveMinimumRequest struct {
 	Position    string `protobuf:"bytes,1,opt,name=position" json:"position,omitempty"`
-	WaitTimeout int64  `protobuf:"varint,2,opt,name=wait_timeout" json:"wait_timeout,omitempty"`
+	WaitTimeout int64  `protobuf:"varint,2,opt,name=wait_timeout,json=waitTimeout" json:"wait_timeout,omitempty"`
 }
 
 func (m *StopSlaveMinimumRequest) Reset()                    { *m = StopSlaveMinimumRequest{} }
 func (m *StopSlaveMinimumRequest) String() string            { return proto.CompactTextString(m) }
 func (*StopSlaveMinimumRequest) ProtoMessage()               {}
-func (*StopSlaveMinimumRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{42} }
+func (*StopSlaveMinimumRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{45} }
 
 type StopSlaveMinimumResponse struct {
 	Position string `protobuf:"bytes,1,opt,name=position" json:"position,omitempty"`
@@ -658,7 +707,7 @@ type StopSlaveMinimumResponse struct {
 func (m *StopSlaveMinimumResponse) Reset()                    { *m = StopSlaveMinimumResponse{} }
 func (m *StopSlaveMinimumResponse) String() string            { return proto.CompactTextString(m) }
 func (*StopSlaveMinimumResponse) ProtoMessage()               {}
-func (*StopSlaveMinimumResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{43} }
+func (*StopSlaveMinimumResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{46} }
 
 type StartSlaveRequest struct {
 }
@@ -666,7 +715,7 @@ type StartSlaveRequest struct {
 func (m *StartSlaveRequest) Reset()                    { *m = StartSlaveRequest{} }
 func (m *StartSlaveRequest) String() string            { return proto.CompactTextString(m) }
 func (*StartSlaveRequest) ProtoMessage()               {}
-func (*StartSlaveRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{44} }
+func (*StartSlaveRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{47} }
 
 type StartSlaveResponse struct {
 }
@@ -674,20 +723,20 @@ type StartSlaveResponse struct {
 func (m *StartSlaveResponse) Reset()                    { *m = StartSlaveResponse{} }
 func (m *StartSlaveResponse) String() string            { return proto.CompactTextString(m) }
 func (*StartSlaveResponse) ProtoMessage()               {}
-func (*StartSlaveResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{45} }
+func (*StartSlaveResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{48} }
 
 type TabletExternallyReparentedRequest struct {
 	// external_id is an string value that may be provided by an external
 	// agent for tracking purposes. The tablet will emit this string in
 	// events triggered by TabletExternallyReparented, such as VitessReparent.
-	ExternalId string `protobuf:"bytes,1,opt,name=external_id" json:"external_id,omitempty"`
+	ExternalId string `protobuf:"bytes,1,opt,name=external_id,json=externalId" json:"external_id,omitempty"`
 }
 
 func (m *TabletExternallyReparentedRequest) Reset()         { *m = TabletExternallyReparentedRequest{} }
 func (m *TabletExternallyReparentedRequest) String() string { return proto.CompactTextString(m) }
 func (*TabletExternallyReparentedRequest) ProtoMessage()    {}
 func (*TabletExternallyReparentedRequest) Descriptor() ([]byte, []int) {
-	return fileDescriptor0, []int{46}
+	return fileDescriptor0, []int{49}
 }
 
 type TabletExternallyReparentedResponse struct {
@@ -697,7 +746,7 @@ func (m *TabletExternallyReparentedResponse) Reset()         { *m = TabletExtern
 func (m *TabletExternallyReparentedResponse) String() string { return proto.CompactTextString(m) }
 func (*TabletExternallyReparentedResponse) ProtoMessage()    {}
 func (*TabletExternallyReparentedResponse) Descriptor() ([]byte, []int) {
-	return fileDescriptor0, []int{47}
+	return fileDescriptor0, []int{50}
 }
 
 type TabletExternallyElectedRequest struct {
@@ -706,7 +755,7 @@ type TabletExternallyElectedRequest struct {
 func (m *TabletExternallyElectedRequest) Reset()                    { *m = TabletExternallyElectedRequest{} }
 func (m *TabletExternallyElectedRequest) String() string            { return proto.CompactTextString(m) }
 func (*TabletExternallyElectedRequest) ProtoMessage()               {}
-func (*TabletExternallyElectedRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{48} }
+func (*TabletExternallyElectedRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{51} }
 
 type TabletExternallyElectedResponse struct {
 }
@@ -715,7 +764,7 @@ func (m *TabletExternallyElectedResponse) Reset()         { *m = TabletExternall
 func (m *TabletExternallyElectedResponse) String() string { return proto.CompactTextString(m) }
 func (*TabletExternallyElectedResponse) ProtoMessage()    {}
 func (*TabletExternallyElectedResponse) Descriptor() ([]byte, []int) {
-	return fileDescriptor0, []int{49}
+	return fileDescriptor0, []int{52}
 }
 
 type GetSlavesRequest struct {
@@ -724,7 +773,7 @@ type GetSlavesRequest struct {
 func (m *GetSlavesRequest) Reset()                    { *m = GetSlavesRequest{} }
 func (m *GetSlavesRequest) String() string            { return proto.CompactTextString(m) }
 func (*GetSlavesRequest) ProtoMessage()               {}
-func (*GetSlavesRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{50} }
+func (*GetSlavesRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{53} }
 
 type GetSlavesResponse struct {
 	Addrs []string `protobuf:"bytes,1,rep,name=addrs" json:"addrs,omitempty"`
@@ -733,17 +782,17 @@ type GetSlavesResponse struct {
 func (m *GetSlavesResponse) Reset()                    { *m = GetSlavesResponse{} }
 func (m *GetSlavesResponse) String() string            { return proto.CompactTextString(m) }
 func (*GetSlavesResponse) ProtoMessage()               {}
-func (*GetSlavesResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{51} }
+func (*GetSlavesResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{54} }
 
 type WaitBlpPositionRequest struct {
-	BlpPosition *BlpPosition `protobuf:"bytes,1,opt,name=blp_position" json:"blp_position,omitempty"`
-	WaitTimeout int64        `protobuf:"varint,2,opt,name=wait_timeout" json:"wait_timeout,omitempty"`
+	BlpPosition *BlpPosition `protobuf:"bytes,1,opt,name=blp_position,json=blpPosition" json:"blp_position,omitempty"`
+	WaitTimeout int64        `protobuf:"varint,2,opt,name=wait_timeout,json=waitTimeout" json:"wait_timeout,omitempty"`
 }
 
 func (m *WaitBlpPositionRequest) Reset()                    { *m = WaitBlpPositionRequest{} }
 func (m *WaitBlpPositionRequest) String() string            { return proto.CompactTextString(m) }
 func (*WaitBlpPositionRequest) ProtoMessage()               {}
-func (*WaitBlpPositionRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{52} }
+func (*WaitBlpPositionRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{55} }
 
 func (m *WaitBlpPositionRequest) GetBlpPosition() *BlpPosition {
 	if m != nil {
@@ -758,7 +807,7 @@ type WaitBlpPositionResponse struct {
 func (m *WaitBlpPositionResponse) Reset()                    { *m = WaitBlpPositionResponse{} }
 func (m *WaitBlpPositionResponse) String() string            { return proto.CompactTextString(m) }
 func (*WaitBlpPositionResponse) ProtoMessage()               {}
-func (*WaitBlpPositionResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{53} }
+func (*WaitBlpPositionResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{56} }
 
 type StopBlpRequest struct {
 }
@@ -766,16 +815,16 @@ type StopBlpRequest struct {
 func (m *StopBlpRequest) Reset()                    { *m = StopBlpRequest{} }
 func (m *StopBlpRequest) String() string            { return proto.CompactTextString(m) }
 func (*StopBlpRequest) ProtoMessage()               {}
-func (*StopBlpRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{54} }
+func (*StopBlpRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{57} }
 
 type StopBlpResponse struct {
-	BlpPositions []*BlpPosition `protobuf:"bytes,1,rep,name=blp_positions" json:"blp_positions,omitempty"`
+	BlpPositions []*BlpPosition `protobuf:"bytes,1,rep,name=blp_positions,json=blpPositions" json:"blp_positions,omitempty"`
 }
 
 func (m *StopBlpResponse) Reset()                    { *m = StopBlpResponse{} }
 func (m *StopBlpResponse) String() string            { return proto.CompactTextString(m) }
 func (*StopBlpResponse) ProtoMessage()               {}
-func (*StopBlpResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{55} }
+func (*StopBlpResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{58} }
 
 func (m *StopBlpResponse) GetBlpPositions() []*BlpPosition {
 	if m != nil {
@@ -790,7 +839,7 @@ type StartBlpRequest struct {
 func (m *StartBlpRequest) Reset()                    { *m = StartBlpRequest{} }
 func (m *StartBlpRequest) String() string            { return proto.CompactTextString(m) }
 func (*StartBlpRequest) ProtoMessage()               {}
-func (*StartBlpRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{56} }
+func (*StartBlpRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{59} }
 
 type StartBlpResponse struct {
 }
@@ -798,17 +847,17 @@ type StartBlpResponse struct {
 func (m *StartBlpResponse) Reset()                    { *m = StartBlpResponse{} }
 func (m *StartBlpResponse) String() string            { return proto.CompactTextString(m) }
 func (*StartBlpResponse) ProtoMessage()               {}
-func (*StartBlpResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{57} }
+func (*StartBlpResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{60} }
 
 type RunBlpUntilRequest struct {
-	BlpPositions []*BlpPosition `protobuf:"bytes,1,rep,name=blp_positions" json:"blp_positions,omitempty"`
-	WaitTimeout  int64          `protobuf:"varint,2,opt,name=wait_timeout" json:"wait_timeout,omitempty"`
+	BlpPositions []*BlpPosition `protobuf:"bytes,1,rep,name=blp_positions,json=blpPositions" json:"blp_positions,omitempty"`
+	WaitTimeout  int64          `protobuf:"varint,2,opt,name=wait_timeout,json=waitTimeout" json:"wait_timeout,omitempty"`
 }
 
 func (m *RunBlpUntilRequest) Reset()                    { *m = RunBlpUntilRequest{} }
 func (m *RunBlpUntilRequest) String() string            { return proto.CompactTextString(m) }
 func (*RunBlpUntilRequest) ProtoMessage()               {}
-func (*RunBlpUntilRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{58} }
+func (*RunBlpUntilRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{61} }
 
 func (m *RunBlpUntilRequest) GetBlpPositions() []*BlpPosition {
 	if m != nil {
@@ -824,7 +873,7 @@ type RunBlpUntilResponse struct {
 func (m *RunBlpUntilResponse) Reset()                    { *m = RunBlpUntilResponse{} }
 func (m *RunBlpUntilResponse) String() string            { return proto.CompactTextString(m) }
 func (*RunBlpUntilResponse) ProtoMessage()               {}
-func (*RunBlpUntilResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{59} }
+func (*RunBlpUntilResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{62} }
 
 type ResetReplicationRequest struct {
 }
@@ -832,7 +881,7 @@ type ResetReplicationRequest struct {
 func (m *ResetReplicationRequest) Reset()                    { *m = ResetReplicationRequest{} }
 func (m *ResetReplicationRequest) String() string            { return proto.CompactTextString(m) }
 func (*ResetReplicationRequest) ProtoMessage()               {}
-func (*ResetReplicationRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{60} }
+func (*ResetReplicationRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{63} }
 
 type ResetReplicationResponse struct {
 }
@@ -840,7 +889,7 @@ type ResetReplicationResponse struct {
 func (m *ResetReplicationResponse) Reset()                    { *m = ResetReplicationResponse{} }
 func (m *ResetReplicationResponse) String() string            { return proto.CompactTextString(m) }
 func (*ResetReplicationResponse) ProtoMessage()               {}
-func (*ResetReplicationResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{61} }
+func (*ResetReplicationResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{64} }
 
 type InitMasterRequest struct {
 }
@@ -848,7 +897,7 @@ type InitMasterRequest struct {
 func (m *InitMasterRequest) Reset()                    { *m = InitMasterRequest{} }
 func (m *InitMasterRequest) String() string            { return proto.CompactTextString(m) }
 func (*InitMasterRequest) ProtoMessage()               {}
-func (*InitMasterRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{62} }
+func (*InitMasterRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{65} }
 
 type InitMasterResponse struct {
 	Position string `protobuf:"bytes,1,opt,name=position" json:"position,omitempty"`
@@ -857,19 +906,19 @@ type InitMasterResponse struct {
 func (m *InitMasterResponse) Reset()                    { *m = InitMasterResponse{} }
 func (m *InitMasterResponse) String() string            { return proto.CompactTextString(m) }
 func (*InitMasterResponse) ProtoMessage()               {}
-func (*InitMasterResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{63} }
+func (*InitMasterResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{66} }
 
 type PopulateReparentJournalRequest struct {
-	TimeCreatedNs       int64                 `protobuf:"varint,1,opt,name=time_created_ns" json:"time_created_ns,omitempty"`
-	ActionName          string                `protobuf:"bytes,2,opt,name=action_name" json:"action_name,omitempty"`
-	MasterAlias         *topodata.TabletAlias `protobuf:"bytes,3,opt,name=master_alias" json:"master_alias,omitempty"`
-	ReplicationPosition string                `protobuf:"bytes,4,opt,name=replication_position" json:"replication_position,omitempty"`
+	TimeCreatedNs       int64                 `protobuf:"varint,1,opt,name=time_created_ns,json=timeCreatedNs" json:"time_created_ns,omitempty"`
+	ActionName          string                `protobuf:"bytes,2,opt,name=action_name,json=actionName" json:"action_name,omitempty"`
+	MasterAlias         *topodata.TabletAlias `protobuf:"bytes,3,opt,name=master_alias,json=masterAlias" json:"master_alias,omitempty"`
+	ReplicationPosition string                `protobuf:"bytes,4,opt,name=replication_position,json=replicationPosition" json:"replication_position,omitempty"`
 }
 
 func (m *PopulateReparentJournalRequest) Reset()                    { *m = PopulateReparentJournalRequest{} }
 func (m *PopulateReparentJournalRequest) String() string            { return proto.CompactTextString(m) }
 func (*PopulateReparentJournalRequest) ProtoMessage()               {}
-func (*PopulateReparentJournalRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{64} }
+func (*PopulateReparentJournalRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{67} }
 
 func (m *PopulateReparentJournalRequest) GetMasterAlias() *topodata.TabletAlias {
 	if m != nil {
@@ -885,19 +934,19 @@ func (m *PopulateReparentJournalResponse) Reset()         { *m = PopulateReparen
 func (m *PopulateReparentJournalResponse) String() string { return proto.CompactTextString(m) }
 func (*PopulateReparentJournalResponse) ProtoMessage()    {}
 func (*PopulateReparentJournalResponse) Descriptor() ([]byte, []int) {
-	return fileDescriptor0, []int{65}
+	return fileDescriptor0, []int{68}
 }
 
 type InitSlaveRequest struct {
 	Parent              *topodata.TabletAlias `protobuf:"bytes,1,opt,name=parent" json:"parent,omitempty"`
-	ReplicationPosition string                `protobuf:"bytes,2,opt,name=replication_position" json:"replication_position,omitempty"`
-	TimeCreatedNs       int64                 `protobuf:"varint,3,opt,name=time_created_ns" json:"time_created_ns,omitempty"`
+	ReplicationPosition string                `protobuf:"bytes,2,opt,name=replication_position,json=replicationPosition" json:"replication_position,omitempty"`
+	TimeCreatedNs       int64                 `protobuf:"varint,3,opt,name=time_created_ns,json=timeCreatedNs" json:"time_created_ns,omitempty"`
 }
 
 func (m *InitSlaveRequest) Reset()                    { *m = InitSlaveRequest{} }
 func (m *InitSlaveRequest) String() string            { return proto.CompactTextString(m) }
 func (*InitSlaveRequest) ProtoMessage()               {}
-func (*InitSlaveRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{66} }
+func (*InitSlaveRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{69} }
 
 func (m *InitSlaveRequest) GetParent() *topodata.TabletAlias {
 	if m != nil {
@@ -912,7 +961,7 @@ type InitSlaveResponse struct {
 func (m *InitSlaveResponse) Reset()                    { *m = InitSlaveResponse{} }
 func (m *InitSlaveResponse) String() string            { return proto.CompactTextString(m) }
 func (*InitSlaveResponse) ProtoMessage()               {}
-func (*InitSlaveResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{67} }
+func (*InitSlaveResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{70} }
 
 type DemoteMasterRequest struct {
 }
@@ -920,7 +969,7 @@ type DemoteMasterRequest struct {
 func (m *DemoteMasterRequest) Reset()                    { *m = DemoteMasterRequest{} }
 func (m *DemoteMasterRequest) String() string            { return proto.CompactTextString(m) }
 func (*DemoteMasterRequest) ProtoMessage()               {}
-func (*DemoteMasterRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{68} }
+func (*DemoteMasterRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{71} }
 
 type DemoteMasterResponse struct {
 	Position string `protobuf:"bytes,1,opt,name=position" json:"position,omitempty"`
@@ -929,7 +978,7 @@ type DemoteMasterResponse struct {
 func (m *DemoteMasterResponse) Reset()                    { *m = DemoteMasterResponse{} }
 func (m *DemoteMasterResponse) String() string            { return proto.CompactTextString(m) }
 func (*DemoteMasterResponse) ProtoMessage()               {}
-func (*DemoteMasterResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{69} }
+func (*DemoteMasterResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{72} }
 
 type PromoteSlaveWhenCaughtUpRequest struct {
 	Position string `protobuf:"bytes,1,opt,name=position" json:"position,omitempty"`
@@ -939,7 +988,7 @@ func (m *PromoteSlaveWhenCaughtUpRequest) Reset()         { *m = PromoteSlaveWhe
 func (m *PromoteSlaveWhenCaughtUpRequest) String() string { return proto.CompactTextString(m) }
 func (*PromoteSlaveWhenCaughtUpRequest) ProtoMessage()    {}
 func (*PromoteSlaveWhenCaughtUpRequest) Descriptor() ([]byte, []int) {
-	return fileDescriptor0, []int{70}
+	return fileDescriptor0, []int{73}
 }
 
 type PromoteSlaveWhenCaughtUpResponse struct {
@@ -950,7 +999,7 @@ func (m *PromoteSlaveWhenCaughtUpResponse) Reset()         { *m = PromoteSlaveWh
 func (m *PromoteSlaveWhenCaughtUpResponse) String() string { return proto.CompactTextString(m) }
 func (*PromoteSlaveWhenCaughtUpResponse) ProtoMessage()    {}
 func (*PromoteSlaveWhenCaughtUpResponse) Descriptor() ([]byte, []int) {
-	return fileDescriptor0, []int{71}
+	return fileDescriptor0, []int{74}
 }
 
 type SlaveWasPromotedRequest struct {
@@ -959,7 +1008,7 @@ type SlaveWasPromotedRequest struct {
 func (m *SlaveWasPromotedRequest) Reset()                    { *m = SlaveWasPromotedRequest{} }
 func (m *SlaveWasPromotedRequest) String() string            { return proto.CompactTextString(m) }
 func (*SlaveWasPromotedRequest) ProtoMessage()               {}
-func (*SlaveWasPromotedRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{72} }
+func (*SlaveWasPromotedRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{75} }
 
 type SlaveWasPromotedResponse struct {
 }
@@ -967,18 +1016,18 @@ type SlaveWasPromotedResponse struct {
 func (m *SlaveWasPromotedResponse) Reset()                    { *m = SlaveWasPromotedResponse{} }
 func (m *SlaveWasPromotedResponse) String() string            { return proto.CompactTextString(m) }
 func (*SlaveWasPromotedResponse) ProtoMessage()               {}
-func (*SlaveWasPromotedResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{73} }
+func (*SlaveWasPromotedResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{76} }
 
 type SetMasterRequest struct {
 	Parent          *topodata.TabletAlias `protobuf:"bytes,1,opt,name=parent" json:"parent,omitempty"`
-	TimeCreatedNs   int64                 `protobuf:"varint,2,opt,name=time_created_ns" json:"time_created_ns,omitempty"`
-	ForceStartSlave bool                  `protobuf:"varint,3,opt,name=force_start_slave" json:"force_start_slave,omitempty"`
+	TimeCreatedNs   int64                 `protobuf:"varint,2,opt,name=time_created_ns,json=timeCreatedNs" json:"time_created_ns,omitempty"`
+	ForceStartSlave bool                  `protobuf:"varint,3,opt,name=force_start_slave,json=forceStartSlave" json:"force_start_slave,omitempty"`
 }
 
 func (m *SetMasterRequest) Reset()                    { *m = SetMasterRequest{} }
 func (m *SetMasterRequest) String() string            { return proto.CompactTextString(m) }
 func (*SetMasterRequest) ProtoMessage()               {}
-func (*SetMasterRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{74} }
+func (*SetMasterRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{77} }
 
 func (m *SetMasterRequest) GetParent() *topodata.TabletAlias {
 	if m != nil {
@@ -993,7 +1042,7 @@ type SetMasterResponse struct {
 func (m *SetMasterResponse) Reset()                    { *m = SetMasterResponse{} }
 func (m *SetMasterResponse) String() string            { return proto.CompactTextString(m) }
 func (*SetMasterResponse) ProtoMessage()               {}
-func (*SetMasterResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{75} }
+func (*SetMasterResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{78} }
 
 type SlaveWasRestartedRequest struct {
 	// the parent alias the tablet should have
@@ -1003,7 +1052,7 @@ type SlaveWasRestartedRequest struct {
 func (m *SlaveWasRestartedRequest) Reset()                    { *m = SlaveWasRestartedRequest{} }
 func (m *SlaveWasRestartedRequest) String() string            { return proto.CompactTextString(m) }
 func (*SlaveWasRestartedRequest) ProtoMessage()               {}
-func (*SlaveWasRestartedRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{76} }
+func (*SlaveWasRestartedRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{79} }
 
 func (m *SlaveWasRestartedRequest) GetParent() *topodata.TabletAlias {
 	if m != nil {
@@ -1018,7 +1067,7 @@ type SlaveWasRestartedResponse struct {
 func (m *SlaveWasRestartedResponse) Reset()                    { *m = SlaveWasRestartedResponse{} }
 func (m *SlaveWasRestartedResponse) String() string            { return proto.CompactTextString(m) }
 func (*SlaveWasRestartedResponse) ProtoMessage()               {}
-func (*SlaveWasRestartedResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{77} }
+func (*SlaveWasRestartedResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{80} }
 
 type StopReplicationAndGetStatusRequest struct {
 }
@@ -1027,7 +1076,7 @@ func (m *StopReplicationAndGetStatusRequest) Reset()         { *m = StopReplicat
 func (m *StopReplicationAndGetStatusRequest) String() string { return proto.CompactTextString(m) }
 func (*StopReplicationAndGetStatusRequest) ProtoMessage()    {}
 func (*StopReplicationAndGetStatusRequest) Descriptor() ([]byte, []int) {
-	return fileDescriptor0, []int{78}
+	return fileDescriptor0, []int{81}
 }
 
 type StopReplicationAndGetStatusResponse struct {
@@ -1038,7 +1087,7 @@ func (m *StopReplicationAndGetStatusResponse) Reset()         { *m = StopReplica
 func (m *StopReplicationAndGetStatusResponse) String() string { return proto.CompactTextString(m) }
 func (*StopReplicationAndGetStatusResponse) ProtoMessage()    {}
 func (*StopReplicationAndGetStatusResponse) Descriptor() ([]byte, []int) {
-	return fileDescriptor0, []int{79}
+	return fileDescriptor0, []int{82}
 }
 
 func (m *StopReplicationAndGetStatusResponse) GetStatus() *replicationdata.Status {
@@ -1054,7 +1103,7 @@ type PromoteSlaveRequest struct {
 func (m *PromoteSlaveRequest) Reset()                    { *m = PromoteSlaveRequest{} }
 func (m *PromoteSlaveRequest) String() string            { return proto.CompactTextString(m) }
 func (*PromoteSlaveRequest) ProtoMessage()               {}
-func (*PromoteSlaveRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{80} }
+func (*PromoteSlaveRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{83} }
 
 type PromoteSlaveResponse struct {
 	Position string `protobuf:"bytes,1,opt,name=position" json:"position,omitempty"`
@@ -1063,7 +1112,7 @@ type PromoteSlaveResponse struct {
 func (m *PromoteSlaveResponse) Reset()                    { *m = PromoteSlaveResponse{} }
 func (m *PromoteSlaveResponse) String() string            { return proto.CompactTextString(m) }
 func (*PromoteSlaveResponse) ProtoMessage()               {}
-func (*PromoteSlaveResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{81} }
+func (*PromoteSlaveResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{84} }
 
 type BackupRequest struct {
 	Concurrency int64 `protobuf:"varint,1,opt,name=concurrency" json:"concurrency,omitempty"`
@@ -1072,7 +1121,7 @@ type BackupRequest struct {
 func (m *BackupRequest) Reset()                    { *m = BackupRequest{} }
 func (m *BackupRequest) String() string            { return proto.CompactTextString(m) }
 func (*BackupRequest) ProtoMessage()               {}
-func (*BackupRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{82} }
+func (*BackupRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{85} }
 
 type BackupResponse struct {
 	Event *logutil.Event `protobuf:"bytes,1,opt,name=event" json:"event,omitempty"`
@@ -1081,9 +1130,33 @@ type BackupResponse struct {
 func (m *BackupResponse) Reset()                    { *m = BackupResponse{} }
 func (m *BackupResponse) String() string            { return proto.CompactTextString(m) }
 func (*BackupResponse) ProtoMessage()               {}
-func (*BackupResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{83} }
+func (*BackupResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{86} }
 
 func (m *BackupResponse) GetEvent() *logutil.Event {
+	if m != nil {
+		return m.Event
+	}
+	return nil
+}
+
+type RestoreFromBackupRequest struct {
+}
+
+func (m *RestoreFromBackupRequest) Reset()                    { *m = RestoreFromBackupRequest{} }
+func (m *RestoreFromBackupRequest) String() string            { return proto.CompactTextString(m) }
+func (*RestoreFromBackupRequest) ProtoMessage()               {}
+func (*RestoreFromBackupRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{87} }
+
+type RestoreFromBackupResponse struct {
+	Event *logutil.Event `protobuf:"bytes,1,opt,name=event" json:"event,omitempty"`
+}
+
+func (m *RestoreFromBackupResponse) Reset()                    { *m = RestoreFromBackupResponse{} }
+func (m *RestoreFromBackupResponse) String() string            { return proto.CompactTextString(m) }
+func (*RestoreFromBackupResponse) ProtoMessage()               {}
+func (*RestoreFromBackupResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{88} }
+
+func (m *RestoreFromBackupResponse) GetEvent() *logutil.Event {
 	if m != nil {
 		return m.Event
 	}
@@ -1093,6 +1166,7 @@ func (m *BackupResponse) GetEvent() *logutil.Event {
 func init() {
 	proto.RegisterType((*TableDefinition)(nil), "tabletmanagerdata.TableDefinition")
 	proto.RegisterType((*SchemaDefinition)(nil), "tabletmanagerdata.SchemaDefinition")
+	proto.RegisterType((*SchemaChangeResult)(nil), "tabletmanagerdata.SchemaChangeResult")
 	proto.RegisterType((*UserPermission)(nil), "tabletmanagerdata.UserPermission")
 	proto.RegisterType((*DbPermission)(nil), "tabletmanagerdata.DbPermission")
 	proto.RegisterType((*Permissions)(nil), "tabletmanagerdata.Permissions")
@@ -1117,6 +1191,8 @@ func init() {
 	proto.RegisterType((*RefreshStateResponse)(nil), "tabletmanagerdata.RefreshStateResponse")
 	proto.RegisterType((*RunHealthCheckRequest)(nil), "tabletmanagerdata.RunHealthCheckRequest")
 	proto.RegisterType((*RunHealthCheckResponse)(nil), "tabletmanagerdata.RunHealthCheckResponse")
+	proto.RegisterType((*IgnoreHealthErrorRequest)(nil), "tabletmanagerdata.IgnoreHealthErrorRequest")
+	proto.RegisterType((*IgnoreHealthErrorResponse)(nil), "tabletmanagerdata.IgnoreHealthErrorResponse")
 	proto.RegisterType((*ReloadSchemaRequest)(nil), "tabletmanagerdata.ReloadSchemaRequest")
 	proto.RegisterType((*ReloadSchemaResponse)(nil), "tabletmanagerdata.ReloadSchemaResponse")
 	proto.RegisterType((*PreflightSchemaRequest)(nil), "tabletmanagerdata.PreflightSchemaRequest")
@@ -1175,113 +1251,139 @@ func init() {
 	proto.RegisterType((*PromoteSlaveResponse)(nil), "tabletmanagerdata.PromoteSlaveResponse")
 	proto.RegisterType((*BackupRequest)(nil), "tabletmanagerdata.BackupRequest")
 	proto.RegisterType((*BackupResponse)(nil), "tabletmanagerdata.BackupResponse")
+	proto.RegisterType((*RestoreFromBackupRequest)(nil), "tabletmanagerdata.RestoreFromBackupRequest")
+	proto.RegisterType((*RestoreFromBackupResponse)(nil), "tabletmanagerdata.RestoreFromBackupResponse")
 }
 
+func init() { proto.RegisterFile("tabletmanagerdata.proto", fileDescriptor0) }
+
 var fileDescriptor0 = []byte{
-	// 1680 bytes of a gzipped FileDescriptorProto
-	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x09, 0x6e, 0x88, 0x02, 0xff, 0xc4, 0x58, 0xdd, 0x4f, 0x1b, 0x47,
-	0x10, 0x97, 0x31, 0x10, 0x18, 0x7f, 0x00, 0xc7, 0x97, 0x21, 0x2d, 0x21, 0x97, 0xb4, 0xa1, 0x1f,
-	0x22, 0x0a, 0xa4, 0x6a, 0x9a, 0xaa, 0xa9, 0x08, 0x90, 0xa6, 0x91, 0xd2, 0x12, 0x48, 0x94, 0xc7,
-	0xd3, 0xfa, 0x6e, 0xb1, 0x4f, 0x9c, 0xef, 0x2e, 0xb7, 0x7b, 0x06, 0xab, 0x8f, 0x7d, 0xed, 0x43,
-	0xab, 0x3e, 0xf5, 0x9f, 0x68, 0xff, 0x86, 0xf6, 0x2f, 0xeb, 0xec, 0xc7, 0xd9, 0x7b, 0xf6, 0x39,
-	0x90, 0xa8, 0x52, 0x5f, 0xa2, 0xdc, 0xec, 0xcc, 0xec, 0x6f, 0x66, 0x67, 0x7e, 0x33, 0x06, 0x56,
-	0x39, 0x69, 0x06, 0x94, 0x77, 0x48, 0x48, 0x5a, 0x34, 0xf1, 0x08, 0x27, 0xdb, 0x71, 0x12, 0xf1,
-	0xc8, 0x5a, 0x18, 0x39, 0x58, 0xaf, 0xbc, 0x49, 0x69, 0xd2, 0x53, 0xe7, 0xeb, 0x75, 0x1e, 0xc5,
-	0xd1, 0x40, 0x7f, 0x7d, 0x39, 0xa1, 0x71, 0xe0, 0xbb, 0x84, 0xfb, 0x51, 0x68, 0x88, 0x6b, 0x41,
-	0xd4, 0x4a, 0xb9, 0x1f, 0xa8, 0x4f, 0xfb, 0xf7, 0x12, 0xcc, 0xbd, 0x14, 0x8e, 0x0f, 0xe8, 0xa9,
-	0x1f, 0xfa, 0x42, 0xd9, 0xaa, 0xc2, 0x64, 0x48, 0x3a, 0xb4, 0x51, 0xda, 0x2c, 0x6d, 0xcd, 0x5a,
-	0x75, 0x98, 0x66, 0x6e, 0x9b, 0x76, 0x48, 0x63, 0x42, 0x7e, 0xcf, 0xc1, 0x35, 0x37, 0x0a, 0xd2,
-	0x4e, 0xc8, 0x1a, 0xe5, 0xcd, 0x32, 0x0a, 0xae, 0xc3, 0x62, 0x9c, 0xf8, 0x1d, 0x92, 0xf4, 0x9c,
-	0x33, 0xda, 0x73, 0xb2, 0xc3, 0x49, 0x79, 0x88, 0xbe, 0x78, 0x2f, 0xa6, 0x8d, 0x29, 0x69, 0xbb,
-	0x08, 0x15, 0x01, 0xc5, 0x09, 0x68, 0xd8, 0xe2, 0xed, 0xc6, 0x34, 0x0a, 0x27, 0xad, 0x05, 0x98,
-	0x4d, 0xa2, 0x73, 0xb4, 0x4b, 0x43, 0xde, 0xb8, 0x26, 0x44, 0xf6, 0x4f, 0x30, 0x7f, 0x22, 0xef,
-	0x34, 0x50, 0xad, 0xc2, 0x9c, 0xb0, 0x6d, 0x12, 0x46, 0x1d, 0x0d, 0x48, 0x01, 0xfc, 0x06, 0x54,
-	0x6a, 0x1c, 0xaf, 0xaf, 0xcc, 0x10, 0x6b, 0x79, 0xab, 0xb2, 0x63, 0x6f, 0x8f, 0x66, 0x73, 0x38,
-	0x5a, 0x8c, 0xa7, 0x4b, 0x13, 0x86, 0xff, 0xc5, 0x78, 0xd0, 0x9f, 0xfd, 0x77, 0x09, 0xea, 0xaf,
-	0x18, 0x4d, 0x8e, 0x68, 0xd2, 0xf1, 0x19, 0xd3, 0x19, 0x69, 0x47, 0x8c, 0xeb, 0x0b, 0xf1, 0x2b,
-	0xc5, 0x73, 0x9d, 0x8f, 0x35, 0x58, 0x88, 0x09, 0x63, 0xe7, 0x51, 0xe2, 0x39, 0x08, 0xcb, 0x3d,
-	0x63, 0x69, 0x47, 0x7a, 0x9a, 0xb4, 0x0e, 0x01, 0x30, 0x33, 0x5d, 0x3f, 0xa0, 0x2d, 0xaa, 0x12,
-	0x52, 0xd9, 0xb9, 0x57, 0x00, 0x29, 0x7f, 0xdb, 0xf6, 0x51, 0xdf, 0xe6, 0x30, 0xe4, 0x49, 0x6f,
-	0xfd, 0x1e, 0xcc, 0x0d, 0x89, 0xac, 0x0a, 0x94, 0x31, 0xd7, 0x1a, 0x4f, 0x0d, 0xa6, 0xba, 0x24,
-	0x48, 0xa9, 0x02, 0xf4, 0x70, 0xe2, 0x41, 0xc9, 0xfe, 0xb3, 0x04, 0xd5, 0x83, 0xe6, 0xd8, 0x08,
-	0x00, 0x26, 0xbc, 0xa6, 0xc6, 0x9f, 0x45, 0x23, 0x83, 0xb7, 0xf6, 0x0b, 0x20, 0xdf, 0x2d, 0x80,
-	0x6c, 0x3a, 0xff, 0x2f, 0x00, 0xff, 0x5c, 0x82, 0xca, 0xc0, 0x23, 0xb3, 0xbe, 0x86, 0x79, 0x81,
-	0xca, 0x89, 0x07, 0x32, 0x34, 0x16, 0x68, 0x6e, 0x5e, 0x9a, 0x40, 0xeb, 0x4b, 0xa8, 0x7b, 0xcd,
-	0x9c, 0xa9, 0x2a, 0x87, 0x1b, 0x97, 0x04, 0x62, 0x7f, 0x0e, 0x95, 0xc7, 0x41, 0x7c, 0x14, 0x31,
-	0x55, 0x1a, 0x08, 0x3a, 0xf5, 0x3d, 0x09, 0xba, 0x66, 0xcd, 0xc3, 0x4c, 0xac, 0x0f, 0x14, 0x6e,
-	0x7b, 0x03, 0x21, 0xfb, 0x61, 0xeb, 0x98, 0x62, 0x1b, 0x32, 0x2e, 0x0a, 0x29, 0x26, 0xbd, 0x20,
-	0x22, 0xca, 0x62, 0xd6, 0xbe, 0x01, 0x55, 0x75, 0xce, 0x62, 0xc4, 0x40, 0x47, 0x15, 0x36, 0xa1,
-	0x7a, 0x12, 0x50, 0x1a, 0x67, 0x1e, 0xf0, 0x0a, 0x2f, 0x4d, 0x64, 0xc7, 0x4a, 0x8d, 0xb2, 0x3d,
-	0x07, 0x35, 0xad, 0xa1, 0x7c, 0xd8, 0x7f, 0x95, 0xc0, 0x3a, 0xbc, 0xa0, 0x6e, 0xca, 0xe9, 0xd3,
-	0x28, 0x3a, 0xcb, 0x2c, 0xf3, 0x2d, 0x8b, 0xef, 0x1b, 0x93, 0x04, 0xbf, 0x39, 0x16, 0xb6, 0x8c,
-	0x7d, 0xd6, 0x7a, 0x02, 0xb3, 0xf4, 0x82, 0x27, 0xc4, 0xa1, 0x61, 0x57, 0x36, 0x6e, 0x65, 0x67,
-	0xb7, 0x20, 0x1d, 0xa3, 0xbe, 0x51, 0x84, 0x66, 0x87, 0x61, 0x57, 0xbd, 0xed, 0x5d, 0xa8, 0xe5,
-	0x04, 0x97, 0xbe, 0xec, 0x33, 0x58, 0xcc, 0x39, 0xd5, 0xc9, 0x40, 0x2a, 0xa0, 0x17, 0x3e, 0x77,
-	0x18, 0x27, 0x3c, 0x65, 0x2a, 0x5c, 0xc9, 0x35, 0xdc, 0x8b, 0x52, 0xae, 0x6b, 0x53, 0x7d, 0xd3,
-	0x44, 0x57, 0xa7, 0xfd, 0x02, 0xe6, 0xbf, 0xa3, 0x5c, 0x51, 0x43, 0x16, 0x3a, 0xea, 0xc8, 0x30,
-	0x54, 0x7d, 0xcc, 0x5a, 0xcb, 0x50, 0xf3, 0x43, 0x37, 0x48, 0x3d, 0xea, 0x74, 0x7d, 0x7a, 0xce,
-	0xa4, 0xab, 0x19, 0x6b, 0x05, 0xea, 0xf4, 0x42, 0x89, 0xb5, 0xba, 0x64, 0x2f, 0xfb, 0x04, 0x16,
-	0x0c, 0x97, 0x1a, 0xdc, 0x23, 0x58, 0x50, 0x14, 0x63, 0x70, 0x8a, 0x84, 0x58, 0xd9, 0xb9, 0x55,
-	0x90, 0xb4, 0x61, 0xae, 0xb2, 0x57, 0x61, 0x19, 0x9d, 0x1a, 0xf5, 0xac, 0xc1, 0xda, 0xcf, 0x61,
-	0x65, 0xf8, 0x40, 0x5f, 0xb9, 0x0b, 0x95, 0x7c, 0xad, 0x8b, 0xcb, 0x36, 0x0a, 0x2e, 0x33, 0x8c,
-	0xed, 0x25, 0xb0, 0x4e, 0x28, 0x3f, 0xa6, 0xc4, 0xfb, 0x31, 0x0c, 0x7a, 0xd9, 0x25, 0xcb, 0xb0,
-	0x98, 0x93, 0xea, 0xd2, 0x19, 0x88, 0x5f, 0x27, 0x3e, 0xa7, 0x99, 0xf6, 0x0a, 0x2c, 0xe5, 0xc5,
-	0x5a, 0x1d, 0x73, 0xb0, 0xdf, 0x26, 0x61, 0x8b, 0xbe, 0x44, 0xfe, 0xce, 0x92, 0xfd, 0x09, 0x54,
-	0x14, 0x22, 0x47, 0xb2, 0xba, 0x40, 0x59, 0xdf, 0x59, 0xda, 0xee, 0x8f, 0x1e, 0x49, 0xae, 0x5c,
-	0x58, 0x08, 0x6c, 0xa6, 0xfd, 0x00, 0xc4, 0x31, 0x3d, 0x4d, 0x28, 0x6b, 0x9f, 0xe0, 0xc3, 0x9b,
-	0x20, 0xf2, 0x62, 0xad, 0xfe, 0x18, 0x96, 0x8f, 0xd3, 0xf0, 0x29, 0x25, 0x01, 0x6f, 0xef, 0x0b,
-	0x72, 0x7d, 0x0f, 0x20, 0x0d, 0x58, 0x19, 0xf6, 0x61, 0x82, 0x11, 0xfd, 0x98, 0xab, 0x28, 0x05,
-	0xc6, 0x14, 0x6b, 0xf5, 0x2d, 0x58, 0x39, 0x4a, 0xe8, 0x69, 0xe0, 0xb7, 0xda, 0xa3, 0x35, 0xe8,
-	0xca, 0x58, 0x75, 0x63, 0xff, 0x5a, 0x82, 0xd5, 0x11, 0x55, 0xfd, 0xd0, 0x0f, 0xa1, 0xd6, 0xa4,
-	0xa7, 0x51, 0x92, 0x9b, 0x62, 0x57, 0xab, 0x2b, 0xeb, 0x2b, 0xa8, 0x92, 0x53, 0x6c, 0x6a, 0xc7,
-	0x98, 0xc8, 0x57, 0x2c, 0xc9, 0x7f, 0x90, 0x38, 0xf6, 0xe2, 0x38, 0xe8, 0xe5, 0x91, 0x63, 0xf7,
-	0xb2, 0x37, 0xc1, 0xa0, 0x7b, 0x11, 0x98, 0x4b, 0x75, 0xcb, 0xe0, 0x64, 0x23, 0x41, 0x80, 0xa3,
-	0xd9, 0xd8, 0x24, 0x64, 0x23, 0xce, 0x8c, 0x06, 0x31, 0xf9, 0xfe, 0x41, 0x4c, 0x5d, 0x3d, 0x88,
-	0x5f, 0x4a, 0xb0, 0x98, 0x0b, 0xe2, 0xff, 0xcd, 0xe9, 0x6f, 0x25, 0x68, 0x68, 0x6e, 0x7b, 0x42,
-	0xb9, 0xdb, 0xde, 0x63, 0x07, 0xcd, 0x7e, 0x66, 0x31, 0x99, 0x72, 0x3d, 0xd3, 0xb9, 0x45, 0xf2,
-	0xc7, 0x99, 0x24, 0x49, 0x5a, 0x71, 0x1b, 0x92, 0x7d, 0x87, 0x5c, 0x38, 0xb8, 0xfa, 0x30, 0xbd,
-	0x2e, 0x20, 0x25, 0x9e, 0x93, 0x90, 0x3b, 0xa7, 0x3e, 0x0d, 0x3c, 0x26, 0x53, 0x3a, 0x23, 0xd7,
-	0x1e, 0x9f, 0xc9, 0xfd, 0xa6, 0xe9, 0x87, 0xb8, 0xbc, 0x31, 0x99, 0xb0, 0x19, 0xc1, 0x73, 0x89,
-	0xac, 0xd2, 0x0c, 0xb8, 0xd8, 0xa6, 0x66, 0xec, 0x6f, 0x61, 0xad, 0x00, 0x92, 0xce, 0x93, 0x0d,
-	0xd3, 0xd8, 0x63, 0x69, 0xc0, 0x75, 0x82, 0xac, 0x6d, 0xb5, 0x41, 0xbe, 0x10, 0xff, 0x1e, 0xcb,
-	0x13, 0xfb, 0x68, 0x38, 0x26, 0x4c, 0xf8, 0x98, 0x98, 0xcc, 0x10, 0x26, 0x8a, 0x42, 0x28, 0x17,
-	0x43, 0x92, 0x1e, 0xdf, 0x01, 0x92, 0xa0, 0xb9, 0x80, 0x74, 0xe9, 0x89, 0x9c, 0x15, 0x59, 0x9b,
-	0x3e, 0x42, 0x3e, 0x33, 0xa5, 0xda, 0xe1, 0x1d, 0x31, 0x33, 0xfa, 0x33, 0xa5, 0xb2, 0xb3, 0xba,
-	0x3d, 0xbc, 0x08, 0x2b, 0x03, 0x41, 0xd2, 0xcf, 0x09, 0xc3, 0x97, 0xcf, 0xe6, 0x7d, 0xe6, 0xf8,
-	0x53, 0x58, 0x19, 0x3e, 0xd0, 0xbe, 0xcd, 0x1d, 0x40, 0x75, 0xba, 0x85, 0x9b, 0x2a, 0x92, 0x8e,
-	0x04, 0x92, 0xd9, 0x2f, 0xc2, 0x82, 0x21, 0xd3, 0xe4, 0xb1, 0x07, 0xab, 0x7d, 0xe1, 0x73, 0x2c,
-	0xa0, 0x4e, 0xda, 0x31, 0xc6, 0x7e, 0xde, 0xab, 0xb5, 0x04, 0xd5, 0x73, 0x82, 0xc3, 0x91, 0xfb,
-	0x1d, 0x9a, 0x4d, 0xc3, 0x32, 0x6e, 0x27, 0x8d, 0x51, 0x17, 0x63, 0x91, 0x49, 0x14, 0x24, 0xe1,
-	0x39, 0x68, 0x22, 0x93, 0x86, 0x50, 0x63, 0x7b, 0x00, 0x37, 0x15, 0x5f, 0xe2, 0x64, 0xa7, 0x49,
-	0x88, 0x4d, 0x8f, 0x99, 0xc7, 0x0d, 0x82, 0x86, 0x9c, 0x7a, 0x19, 0x4a, 0x39, 0xb0, 0xd5, 0xb1,
-	0xe3, 0x67, 0x1b, 0xcc, 0x6d, 0xb0, 0xdf, 0x66, 0xa9, 0xfd, 0x6f, 0xc2, 0xc6, 0xb0, 0xd6, 0x61,
-	0x40, 0xdd, 0x81, 0x73, 0xfb, 0x26, 0xdc, 0x18, 0xab, 0xa1, 0x9d, 0x58, 0x6a, 0xf6, 0x0b, 0xe0,
-	0xfd, 0x12, 0xb0, 0xd5, 0xf0, 0xd6, 0x32, 0x9d, 0x0a, 0x2c, 0x52, 0xe2, 0x79, 0x89, 0xde, 0x07,
-	0x6c, 0x0f, 0x56, 0x5e, 0x63, 0x2e, 0x8d, 0xbd, 0x2e, 0x8b, 0xe8, 0x3e, 0x54, 0x9b, 0x41, 0xec,
-	0xe4, 0xf2, 0x56, 0x3c, 0x73, 0xcd, 0xa5, 0xb0, 0xf8, 0x6d, 0xd6, 0x60, 0x75, 0xe4, 0x16, 0x0d,
-	0x7c, 0x1e, 0xea, 0xe2, 0xd9, 0xf0, 0x28, 0x83, 0xfd, 0x14, 0xe6, 0xfa, 0x12, 0x0d, 0xfa, 0x0b,
-	0x64, 0x30, 0x03, 0x4b, 0xb6, 0xec, 0x5e, 0x02, 0xc6, 0x5e, 0x10, 0x9e, 0xf0, 0x3d, 0x0d, 0xe7,
-	0xb2, 0x22, 0x33, 0x91, 0x86, 0x40, 0xc0, 0xc2, 0x11, 0x88, 0x92, 0x57, 0x21, 0xfe, 0xf4, 0xcb,
-	0xe2, 0x7f, 0xbf, 0x3b, 0xc7, 0x24, 0xe0, 0x0e, 0xce, 0x52, 0xf3, 0x8a, 0xb1, 0x75, 0x89, 0x99,
-	0xc2, 0x53, 0xb1, 0x71, 0xf4, 0xbb, 0x32, 0x83, 0xbe, 0x0e, 0x8d, 0xd1, 0x23, 0x1d, 0x02, 0x96,
-	0xf3, 0xf7, 0x48, 0xbb, 0xaa, 0x31, 0x33, 0x83, 0x8f, 0xc1, 0x32, 0x85, 0x63, 0xef, 0xfc, 0xa3,
-	0x04, 0x1b, 0x47, 0x51, 0x9c, 0x06, 0x72, 0xb7, 0x50, 0xf5, 0xf9, 0x2c, 0x4a, 0x45, 0xa1, 0x65,
-	0xc9, 0x40, 0x9e, 0x15, 0x01, 0x39, 0x6e, 0x42, 0x51, 0xc9, 0x73, 0xc2, 0x6c, 0x27, 0xc5, 0xba,
-	0x27, 0xae, 0xf0, 0x65, 0x92, 0xf7, 0x67, 0x50, 0xed, 0xc8, 0x4b, 0x1d, 0x12, 0xf8, 0x44, 0x11,
-	0x5d, 0x65, 0x67, 0x79, 0x78, 0xff, 0xd8, 0x13, 0x87, 0xd6, 0x07, 0xb0, 0x64, 0x50, 0xd0, 0xa0,
-	0xde, 0x26, 0x25, 0x36, 0x2c, 0xfd, 0xb1, 0xd0, 0x74, 0xec, 0x31, 0xcc, 0x8b, 0x30, 0xcd, 0x4e,
-	0xb6, 0x3e, 0x82, 0x69, 0xa5, 0xac, 0xcb, 0xf6, 0x1d, 0xef, 0x56, 0x61, 0x14, 0x04, 0x5d, 0x96,
-	0xaf, 0xa9, 0xb3, 0x9d, 0xa7, 0x09, 0x5c, 0x97, 0x0e, 0x68, 0x27, 0xe2, 0x34, 0xff, 0x08, 0x5b,
-	0xb0, 0x94, 0x17, 0x8f, 0x7d, 0x86, 0x5d, 0x0c, 0x35, 0x89, 0x84, 0xaa, 0x74, 0xfc, 0xba, 0x4d,
-	0xc3, 0x7d, 0x92, 0xe2, 0x8a, 0xf4, 0x2a, 0x1e, 0xcb, 0x85, 0xf6, 0x7d, 0xd8, 0x1c, 0x6f, 0xf4,
-	0xb6, 0x2a, 0x53, 0xea, 0x84, 0x69, 0x6b, 0xcf, 0xa8, 0xb2, 0xd1, 0x23, 0x1d, 0x62, 0x07, 0x9b,
-	0x87, 0xe6, 0x8b, 0xec, 0xaa, 0x99, 0x2e, 0xc8, 0xa5, 0xec, 0x0c, 0xb1, 0x46, 0xc9, 0xad, 0x4a,
-	0xfc, 0xd4, 0x49, 0xf0, 0x07, 0x8f, 0xb8, 0x5b, 0x4f, 0x46, 0xc1, 0xd1, 0x74, 0xa8, 0x7c, 0x71,
-	0x52, 0xf4, 0xf1, 0xa1, 0x4c, 0xd8, 0x0c, 0x48, 0xf8, 0x6a, 0x58, 0xec, 0xeb, 0xb0, 0x56, 0xe0,
-	0x42, 0xfb, 0x47, 0xce, 0x16, 0xec, 0x63, 0x34, 0xd9, 0x5e, 0xe8, 0x09, 0x1a, 0xcd, 0x4d, 0xd7,
-	0x1f, 0xe0, 0xd6, 0x5b, 0xb5, 0xde, 0x75, 0xda, 0x62, 0xf1, 0x98, 0xcf, 0x68, 0x14, 0x4f, 0x5e,
-	0x3c, 0xf6, 0x45, 0x6f, 0x43, 0xed, 0x31, 0x71, 0xcf, 0xd2, 0xd8, 0x18, 0x48, 0x6e, 0x14, 0xba,
-	0x69, 0x82, 0xf9, 0x70, 0x7b, 0xfa, 0x07, 0xf3, 0x5d, 0xa8, 0x67, 0x5a, 0xda, 0xd3, 0x87, 0x30,
-	0x45, 0xbb, 0x83, 0x8c, 0xd5, 0xb7, 0xb3, 0x3f, 0x80, 0x1d, 0x0a, 0x69, 0x73, 0x5a, 0xfe, 0x1d,
-	0x6c, 0xf7, 0xdf, 0x00, 0x00, 0x00, 0xff, 0xff, 0x04, 0xc8, 0x93, 0x04, 0x78, 0x13, 0x00, 0x00,
+	// 2018 bytes of a gzipped FileDescriptorProto
+	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x09, 0x6e, 0x88, 0x02, 0xff, 0xcc, 0x58, 0x5b, 0x6f, 0x1b, 0xc7,
+	0xf5, 0x07, 0x45, 0x49, 0x96, 0xce, 0x92, 0x14, 0xb9, 0xd4, 0x85, 0x52, 0x00, 0x4b, 0x5e, 0x3b,
+	0xff, 0xf8, 0xef, 0xa2, 0x4a, 0xad, 0xa4, 0x41, 0x90, 0x20, 0x45, 0x75, 0xb5, 0x9d, 0x38, 0xb1,
+	0xb2, 0xf2, 0xa5, 0xe8, 0xcb, 0x62, 0xc8, 0x3d, 0x22, 0x17, 0x5a, 0xee, 0xae, 0x67, 0x66, 0x25,
+	0x11, 0x28, 0xfa, 0x2d, 0xfa, 0xd6, 0xb7, 0x02, 0xed, 0x7b, 0x3f, 0x4c, 0x8a, 0x7e, 0x92, 0x3e,
+	0xf4, 0xa5, 0x98, 0x1b, 0x39, 0x4b, 0x52, 0x36, 0x65, 0xa4, 0x40, 0x5f, 0x84, 0x3d, 0xbf, 0x39,
+	0xf7, 0x39, 0x73, 0xce, 0xa1, 0x60, 0x83, 0x93, 0x76, 0x8c, 0xbc, 0x4f, 0x12, 0xd2, 0x45, 0x1a,
+	0x12, 0x4e, 0x76, 0x33, 0x9a, 0xf2, 0xd4, 0x6d, 0x4c, 0x1c, 0x6c, 0x39, 0x6f, 0x73, 0xa4, 0x03,
+	0x75, 0xbe, 0x55, 0xe3, 0x69, 0x96, 0x8e, 0xf8, 0xb7, 0xd6, 0x28, 0x66, 0x71, 0xd4, 0x21, 0x3c,
+	0x4a, 0x13, 0x0b, 0xae, 0xc6, 0x69, 0x37, 0xe7, 0x51, 0xac, 0x48, 0xef, 0x9f, 0x25, 0x58, 0x79,
+	0x29, 0x14, 0x1f, 0xe1, 0x79, 0x94, 0x44, 0x82, 0xd9, 0x75, 0x61, 0x3e, 0x21, 0x7d, 0x6c, 0x95,
+	0x76, 0x4a, 0x0f, 0x97, 0x7d, 0xf9, 0xed, 0xae, 0xc3, 0x22, 0xeb, 0xf4, 0xb0, 0x4f, 0x5a, 0x73,
+	0x12, 0xd5, 0x94, 0xdb, 0x82, 0x3b, 0x9d, 0x34, 0xce, 0xfb, 0x09, 0x6b, 0x95, 0x77, 0xca, 0x0f,
+	0x97, 0x7d, 0x43, 0xba, 0xbb, 0xd0, 0xcc, 0x68, 0xd4, 0x27, 0x74, 0x10, 0x5c, 0xe0, 0x20, 0x30,
+	0x5c, 0xf3, 0x92, 0xab, 0xa1, 0x8f, 0xbe, 0xc3, 0xc1, 0xa1, 0xe6, 0x77, 0x61, 0x9e, 0x0f, 0x32,
+	0x6c, 0x2d, 0x28, 0xab, 0xe2, 0xdb, 0xdd, 0x06, 0x47, 0xb8, 0x1e, 0xc4, 0x98, 0x74, 0x79, 0xaf,
+	0xb5, 0xb8, 0x53, 0x7a, 0x38, 0xef, 0x83, 0x80, 0x9e, 0x4b, 0xc4, 0xfd, 0x08, 0x96, 0x69, 0x7a,
+	0x15, 0x74, 0xd2, 0x3c, 0xe1, 0xad, 0x3b, 0xf2, 0x78, 0x89, 0xa6, 0x57, 0x87, 0x82, 0xf6, 0xfe,
+	0x5a, 0x82, 0xfa, 0x99, 0x74, 0xd3, 0x0a, 0xee, 0x13, 0x58, 0x11, 0xf2, 0x6d, 0xc2, 0x30, 0xd0,
+	0x11, 0xa9, 0x38, 0x6b, 0x06, 0x56, 0x22, 0xee, 0x0b, 0x50, 0x19, 0x0f, 0xc2, 0xa1, 0x30, 0x6b,
+	0xcd, 0xed, 0x94, 0x1f, 0x3a, 0x7b, 0xde, 0xee, 0xe4, 0x25, 0x8d, 0x25, 0xd1, 0xaf, 0xf3, 0x22,
+	0xc0, 0x44, 0xaa, 0x2e, 0x91, 0xb2, 0x28, 0x4d, 0x5a, 0x65, 0x69, 0xd1, 0x90, 0xc2, 0x51, 0x57,
+	0x59, 0x3d, 0xec, 0x91, 0xa4, 0x8b, 0x3e, 0xb2, 0x3c, 0xe6, 0xee, 0x53, 0xa8, 0xb6, 0xf1, 0x3c,
+	0xa5, 0x05, 0x47, 0x9d, 0xbd, 0xfb, 0x53, 0xac, 0x8f, 0x87, 0xe9, 0x57, 0x94, 0xa4, 0x8e, 0xe5,
+	0x04, 0x2a, 0xe4, 0x9c, 0x23, 0x0d, 0xac, 0x3b, 0x9c, 0x51, 0x91, 0x23, 0x05, 0x15, 0xec, 0xfd,
+	0xab, 0x04, 0xb5, 0x57, 0x0c, 0xe9, 0x29, 0xd2, 0x7e, 0xc4, 0x98, 0x2e, 0x96, 0x5e, 0xca, 0xb8,
+	0x29, 0x16, 0xf1, 0x2d, 0xb0, 0x9c, 0x21, 0xd5, 0xa5, 0x22, 0xbf, 0xdd, 0x5f, 0x40, 0x23, 0x23,
+	0x8c, 0x5d, 0xa5, 0x34, 0x0c, 0x3a, 0x3d, 0xec, 0x5c, 0xb0, 0xbc, 0x2f, 0xf3, 0x30, 0xef, 0xd7,
+	0xcd, 0xc1, 0xa1, 0xc6, 0xdd, 0x1f, 0x01, 0x32, 0x1a, 0x5d, 0x46, 0x31, 0x76, 0x51, 0x95, 0x8c,
+	0xb3, 0xf7, 0x78, 0x8a, 0xb7, 0x45, 0x5f, 0x76, 0x4f, 0x87, 0x32, 0xc7, 0x09, 0xa7, 0x03, 0xdf,
+	0x52, 0xb2, 0xf5, 0x0d, 0xac, 0x8c, 0x1d, 0xbb, 0x75, 0x28, 0x5f, 0xe0, 0x40, 0x7b, 0x2e, 0x3e,
+	0xdd, 0x55, 0x58, 0xb8, 0x24, 0x71, 0x8e, 0xda, 0x73, 0x45, 0x7c, 0x35, 0xf7, 0x65, 0xc9, 0xfb,
+	0xa9, 0x04, 0x95, 0xa3, 0xf6, 0x7b, 0xe2, 0xae, 0xc1, 0x5c, 0xd8, 0xd6, 0xb2, 0x73, 0x61, 0x7b,
+	0x98, 0x87, 0xb2, 0x95, 0x87, 0x17, 0x53, 0x42, 0xfb, 0x74, 0x4a, 0x68, 0xb6, 0xb1, 0xff, 0x66,
+	0x60, 0x7f, 0x29, 0x81, 0x33, 0xb2, 0xc4, 0xdc, 0xe7, 0x50, 0x17, 0x7e, 0x06, 0xd9, 0x08, 0x6b,
+	0x95, 0xa4, 0x97, 0xf7, 0xde, 0x7b, 0x01, 0xfe, 0x4a, 0x5e, 0xa0, 0x99, 0x7b, 0x02, 0xb5, 0xb0,
+	0x5d, 0xd0, 0xa5, 0x5e, 0xd0, 0xf6, 0x7b, 0x22, 0xf6, 0xab, 0xa1, 0x45, 0x31, 0xef, 0x6b, 0x70,
+	0x0e, 0xe2, 0xec, 0x34, 0x65, 0xea, 0x11, 0xd7, 0xa1, 0x9c, 0x47, 0xa1, 0x0c, 0xb0, 0xea, 0x8b,
+	0x4f, 0x77, 0x0b, 0x96, 0x32, 0x7d, 0xaa, 0x63, 0x1c, 0xd2, 0xde, 0x27, 0xe0, 0x9c, 0x46, 0x49,
+	0xd7, 0xc7, 0xb7, 0x39, 0x32, 0x2e, 0xde, 0x61, 0x46, 0x06, 0x71, 0x4a, 0x42, 0x9d, 0x21, 0x43,
+	0x7a, 0x0f, 0xa1, 0xa2, 0x18, 0x59, 0x96, 0x26, 0x0c, 0xdf, 0xc1, 0xf9, 0x08, 0x2a, 0x67, 0x31,
+	0x62, 0x66, 0x74, 0x6e, 0xc1, 0x52, 0x98, 0x53, 0xd9, 0x6b, 0x25, 0x6b, 0xd9, 0x1f, 0xd2, 0xde,
+	0x0a, 0x54, 0x35, 0xaf, 0x52, 0xeb, 0xfd, 0xa3, 0x04, 0xee, 0xf1, 0x35, 0x76, 0x72, 0x8e, 0x4f,
+	0xd3, 0xf4, 0xc2, 0xe8, 0x98, 0xd6, 0x76, 0xef, 0x02, 0x64, 0x84, 0x92, 0x3e, 0x72, 0xa4, 0x2a,
+	0x77, 0xcb, 0xbe, 0x85, 0xb8, 0xa7, 0xb0, 0x8c, 0xd7, 0x9c, 0x92, 0x00, 0x93, 0x4b, 0xd9, 0x80,
+	0x9d, 0xbd, 0xcf, 0xa6, 0xa4, 0x76, 0xd2, 0xda, 0xee, 0xb1, 0x10, 0x3b, 0x4e, 0x2e, 0x55, 0x41,
+	0x2d, 0xa1, 0x26, 0xb7, 0xbe, 0x86, 0x6a, 0xe1, 0xe8, 0x56, 0xc5, 0x74, 0x0e, 0xcd, 0x82, 0x29,
+	0x9d, 0xc7, 0x6d, 0x70, 0xf0, 0x3a, 0xe2, 0x01, 0xe3, 0x84, 0xe7, 0x4c, 0x27, 0x08, 0x04, 0x74,
+	0x26, 0x11, 0x39, 0x5d, 0x78, 0x98, 0xe6, 0x7c, 0x38, 0x5d, 0x24, 0xa5, 0x71, 0xa4, 0xe6, 0x09,
+	0x69, 0xca, 0xbb, 0x84, 0xfa, 0x13, 0xe4, 0xaa, 0x29, 0x99, 0xf4, 0xad, 0xc3, 0xa2, 0x0c, 0x5c,
+	0x95, 0xeb, 0xb2, 0xaf, 0x29, 0xf7, 0x3e, 0x54, 0xa3, 0xa4, 0x13, 0xe7, 0x21, 0x06, 0x97, 0x11,
+	0x5e, 0x31, 0x69, 0x62, 0xc9, 0xaf, 0x68, 0xf0, 0xb5, 0xc0, 0xdc, 0x8f, 0xa1, 0x86, 0xd7, 0x8a,
+	0x49, 0x2b, 0x51, 0xd3, 0xac, 0xaa, 0x51, 0xd9, 0xdd, 0x99, 0x87, 0xd0, 0xb0, 0xec, 0xea, 0xe8,
+	0x4e, 0xa1, 0xa1, 0xda, 0xaa, 0x35, 0x29, 0x6e, 0xd3, 0xaa, 0xeb, 0x6c, 0x0c, 0xf1, 0x36, 0x60,
+	0xed, 0x09, 0x72, 0xab, 0xfe, 0x75, 0x8c, 0xde, 0xef, 0x61, 0x7d, 0xfc, 0x40, 0x3b, 0xf1, 0x5b,
+	0x70, 0x8a, 0x2f, 0x56, 0x98, 0xbf, 0x3b, 0xc5, 0xbc, 0x2d, 0x6c, 0x8b, 0x78, 0xab, 0xe0, 0x9e,
+	0x21, 0xf7, 0x91, 0x84, 0x2f, 0x92, 0x78, 0x60, 0x2c, 0xae, 0x41, 0xb3, 0x80, 0xea, 0x12, 0x1e,
+	0xc1, 0x6f, 0x68, 0xc4, 0xd1, 0x70, 0xaf, 0xc3, 0x6a, 0x11, 0xd6, 0xec, 0xdf, 0x42, 0x43, 0x4d,
+	0xb6, 0x97, 0x83, 0xcc, 0x30, 0xbb, 0xbf, 0x06, 0x47, 0xb9, 0x17, 0xc8, 0xb9, 0x2f, 0x5c, 0xae,
+	0xed, 0xad, 0xee, 0x0e, 0xd7, 0x18, 0x99, 0x73, 0x2e, 0x25, 0x80, 0x0f, 0xbf, 0x85, 0x9f, 0xb6,
+	0xae, 0x91, 0x43, 0x3e, 0x9e, 0x53, 0x64, 0x3d, 0x51, 0x52, 0xb6, 0x43, 0x45, 0x58, 0xb3, 0x6f,
+	0xc0, 0x9a, 0x9f, 0x27, 0x4f, 0x91, 0xc4, 0xbc, 0x27, 0xa7, 0x8e, 0x11, 0x68, 0xc1, 0xfa, 0xf8,
+	0x81, 0x16, 0xf9, 0x1c, 0x5a, 0xcf, 0xba, 0x49, 0x4a, 0x51, 0x1d, 0x1e, 0x53, 0x9a, 0xd2, 0x42,
+	0x4b, 0xe1, 0x1c, 0x69, 0x32, 0x6a, 0x14, 0x92, 0xf4, 0x3e, 0x82, 0xcd, 0x29, 0x52, 0x5a, 0xe5,
+	0x57, 0xc2, 0x69, 0xd1, 0x4f, 0x8a, 0x95, 0x7c, 0x1f, 0xaa, 0x57, 0x24, 0xe2, 0xc1, 0xb0, 0xa1,
+	0x29, 0x9d, 0x15, 0x01, 0x9a, 0x16, 0xa8, 0x22, 0xb3, 0x65, 0xb5, 0xce, 0x3d, 0x58, 0x3f, 0xa5,
+	0x78, 0x1e, 0x47, 0xdd, 0xde, 0xd8, 0x03, 0x11, 0xab, 0x9a, 0x4c, 0x9c, 0x79, 0x21, 0x86, 0xf4,
+	0xba, 0xb0, 0x31, 0x21, 0xa3, 0xeb, 0xea, 0x39, 0xd4, 0x14, 0x57, 0x40, 0xe5, 0x52, 0x62, 0x86,
+	0xc1, 0xc7, 0x37, 0x56, 0xb6, 0xbd, 0xc2, 0xf8, 0xd5, 0x8e, 0x45, 0x31, 0xef, 0xdf, 0x25, 0x70,
+	0xf7, 0xb3, 0x2c, 0x1e, 0x14, 0x3d, 0xab, 0x43, 0x99, 0xbd, 0x8d, 0x4d, 0x8b, 0x61, 0x6f, 0x63,
+	0xd1, 0x62, 0xce, 0x53, 0xda, 0x41, 0xfd, 0x58, 0x15, 0x21, 0x76, 0x08, 0x12, 0xc7, 0xe9, 0x55,
+	0x60, 0xad, 0xb6, 0xb2, 0x33, 0x2c, 0xf9, 0x75, 0x79, 0xe0, 0x8f, 0xf0, 0xc9, 0xed, 0x69, 0xfe,
+	0xe7, 0xda, 0x9e, 0x16, 0x3e, 0x70, 0x7b, 0xfa, 0x5b, 0x09, 0x9a, 0x85, 0xe8, 0x75, 0x8e, 0xff,
+	0xf7, 0xf6, 0xbc, 0xbf, 0x97, 0xa0, 0xa5, 0x1b, 0xf9, 0x09, 0xf2, 0x4e, 0x6f, 0x9f, 0x1d, 0xb5,
+	0x87, 0xb7, 0xb5, 0x0a, 0x0b, 0xf2, 0x77, 0x87, 0x74, 0xb3, 0xe2, 0x2b, 0xc2, 0xdd, 0x80, 0x3b,
+	0x61, 0x3b, 0x90, 0x03, 0x4c, 0xf7, 0xf0, 0xb0, 0xfd, 0x83, 0x18, 0x61, 0x9b, 0xb0, 0xd4, 0x27,
+	0xd7, 0x01, 0x4d, 0xaf, 0x98, 0xde, 0xf7, 0xee, 0xf4, 0xc9, 0xb5, 0x9f, 0x5e, 0x31, 0xb9, 0x8b,
+	0x47, 0x4c, 0x2e, 0xd9, 0xed, 0x28, 0x89, 0xd3, 0x2e, 0x93, 0x97, 0xb4, 0xe4, 0xd7, 0x34, 0x7c,
+	0xa0, 0x50, 0xf1, 0x22, 0xa8, 0x2c, 0x76, 0xfb, 0x0a, 0x96, 0xfc, 0x0a, 0xb5, 0x5e, 0x80, 0xf7,
+	0x04, 0x36, 0xa7, 0xf8, 0xac, 0x73, 0xfc, 0x08, 0x16, 0x55, 0x01, 0xeb, 0xe4, 0xba, 0xbb, 0xea,
+	0xb7, 0xd3, 0x8f, 0xe2, 0xaf, 0x2e, 0x56, 0xcd, 0xe1, 0x7d, 0x37, 0x1e, 0xfc, 0x7e, 0x96, 0xbd,
+	0x3b, 0x78, 0x3b, 0xc6, 0xb9, 0x42, 0x8c, 0x93, 0x5e, 0x49, 0x65, 0x1f, 0xe0, 0x95, 0xe8, 0xcf,
+	0x31, 0xb9, 0x44, 0x35, 0x32, 0x4d, 0xbf, 0x3a, 0x81, 0x66, 0x01, 0xd5, 0x8a, 0x3f, 0x15, 0x83,
+	0x73, 0x38, 0x6c, 0x9d, 0xbd, 0x8d, 0xdd, 0xf1, 0x5f, 0x83, 0x5a, 0x40, 0xb3, 0x89, 0x86, 0xf8,
+	0x3d, 0x61, 0x1c, 0xa9, 0x69, 0x30, 0xc6, 0xc0, 0xe7, 0xb0, 0x3e, 0x7e, 0xa0, 0x6d, 0xd8, 0x2b,
+	0x57, 0x69, 0x6c, 0xe5, 0x72, 0xa1, 0x7e, 0xc6, 0xd3, 0x4c, 0xba, 0x66, 0x34, 0x35, 0xa1, 0x61,
+	0x61, 0xba, 0x5d, 0xfd, 0x0e, 0x36, 0x86, 0xe0, 0xf7, 0x51, 0x12, 0xf5, 0xf3, 0xbe, 0xb5, 0x53,
+	0xdd, 0xa4, 0xdf, 0xbd, 0x07, 0xb2, 0x1b, 0x06, 0x3c, 0xea, 0xa3, 0x59, 0x1b, 0xca, 0xbe, 0x23,
+	0xb0, 0x97, 0x0a, 0xf2, 0xbe, 0x80, 0xd6, 0xa4, 0xe6, 0x19, 0x5c, 0x97, 0x6e, 0x12, 0xca, 0x0b,
+	0xbe, 0x8b, 0xe4, 0x5b, 0xa0, 0x76, 0xfe, 0x08, 0xee, 0xa9, 0x21, 0x75, 0x7c, 0x2d, 0x9a, 0x3d,
+	0x89, 0xc5, 0x84, 0xcc, 0x08, 0xc5, 0x84, 0x63, 0x68, 0xc2, 0x90, 0xcb, 0x8f, 0x3a, 0x0e, 0x22,
+	0xb3, 0x48, 0x82, 0x81, 0x9e, 0x85, 0xde, 0x03, 0xf0, 0xde, 0xa5, 0x45, 0xdb, 0xda, 0x81, 0xbb,
+	0xe3, 0x5c, 0xc7, 0x31, 0x76, 0x46, 0x86, 0xbc, 0x7b, 0xb0, 0x7d, 0x23, 0x87, 0x56, 0xe2, 0xaa,
+	0xbd, 0x49, 0x04, 0x31, 0xac, 0xa0, 0xff, 0x57, 0x3b, 0x8d, 0xc6, 0x74, 0x82, 0x56, 0x61, 0x81,
+	0x84, 0x21, 0x35, 0x93, 0x42, 0x11, 0xde, 0x1f, 0x61, 0xfd, 0x0d, 0x89, 0xb8, 0xb5, 0x89, 0x9b,
+	0x20, 0xf7, 0xa1, 0xd2, 0x8e, 0xb3, 0xe2, 0xc4, 0x9a, 0xbe, 0x7f, 0xd8, 0xc2, 0x4e, 0xdb, 0xda,
+	0xe9, 0x67, 0xb8, 0xd2, 0x4d, 0xd8, 0x98, 0xb0, 0xaf, 0x23, 0xab, 0x43, 0x4d, 0xdc, 0xf6, 0x41,
+	0x6c, 0x5e, 0xaa, 0xf7, 0x1a, 0x56, 0x86, 0x88, 0x8e, 0xea, 0x10, 0xaa, 0xb6, 0x97, 0x66, 0x96,
+	0xbd, 0xcf, 0xcd, 0x8a, 0xe5, 0x26, 0xf3, 0x1a, 0x42, 0x2f, 0xa1, 0xdc, 0x32, 0x25, 0xab, 0xdd,
+	0x40, 0xda, 0xa1, 0x3f, 0x80, 0xeb, 0xe7, 0xc9, 0x41, 0x9c, 0xbd, 0x4a, 0x78, 0x14, 0x9b, 0x3c,
+	0xfd, 0x1c, 0x1e, 0xcc, 0x92, 0xa9, 0xc7, 0xd0, 0x2c, 0x58, 0x9f, 0xa1, 0xee, 0x37, 0x61, 0xc3,
+	0x47, 0x26, 0xb6, 0xb7, 0x61, 0xa3, 0x30, 0xf1, 0x6d, 0x41, 0x6b, 0xf2, 0x48, 0xc7, 0xd9, 0x84,
+	0xc6, 0xb3, 0x24, 0xe2, 0xaa, 0x47, 0x18, 0x81, 0x5f, 0x81, 0x6b, 0x83, 0x33, 0x58, 0xff, 0xa9,
+	0x04, 0x77, 0x4f, 0xd3, 0x2c, 0x8f, 0xe5, 0x96, 0xa6, 0xaa, 0xff, 0xdb, 0x34, 0x17, 0x65, 0x6c,
+	0x72, 0xf7, 0x7f, 0xb0, 0x22, 0x22, 0x0e, 0x3a, 0x14, 0x09, 0xc7, 0x30, 0x48, 0xcc, 0x2f, 0x89,
+	0xaa, 0x80, 0x0f, 0x15, 0xfa, 0x03, 0x13, 0x0f, 0x8e, 0x74, 0x84, 0x52, 0x7b, 0x1a, 0x81, 0x82,
+	0xe4, 0x44, 0xfa, 0x12, 0x2a, 0x7d, 0xe9, 0x59, 0x40, 0xe2, 0x88, 0xa8, 0xa9, 0xe4, 0xec, 0xad,
+	0x8d, 0x6f, 0x9e, 0xfb, 0xe2, 0xd0, 0x77, 0x14, 0xab, 0x24, 0xdc, 0xc7, 0xb0, 0x6a, 0xf5, 0xd1,
+	0x51, 0xb9, 0xcf, 0x4b, 0x1b, 0x4d, 0xeb, 0x6c, 0xb8, 0xa7, 0xdd, 0x83, 0xed, 0x1b, 0xe3, 0xd2,
+	0x29, 0xfc, 0x73, 0x09, 0xea, 0x22, 0x5d, 0x76, 0xc7, 0x71, 0x7f, 0x09, 0x8b, 0x8a, 0x5b, 0xbf,
+	0xa5, 0x1b, 0xdc, 0xd3, 0x4c, 0x37, 0x7a, 0x36, 0x77, 0xa3, 0x67, 0xd3, 0xf2, 0x59, 0x9e, 0x92,
+	0x4f, 0x73, 0xc3, 0xc5, 0xd6, 0xb7, 0x06, 0xcd, 0x23, 0xec, 0xa7, 0x1c, 0x8b, 0x17, 0xbf, 0x07,
+	0xab, 0x45, 0x78, 0x86, 0xab, 0xff, 0x06, 0xb6, 0x4f, 0x69, 0x2a, 0x84, 0xa4, 0x89, 0x37, 0x3d,
+	0x4c, 0x0e, 0x49, 0xde, 0xed, 0xf1, 0x57, 0xd9, 0x0c, 0xa3, 0xc0, 0xfb, 0x0d, 0xec, 0xdc, 0x2c,
+	0x3e, 0x5b, 0xdd, 0x2b, 0x41, 0xc2, 0xb4, 0x9e, 0xd0, 0xaa, 0xfb, 0xc9, 0x23, 0x9d, 0x80, 0x3f,
+	0x95, 0xa0, 0x7e, 0x86, 0xc5, 0xba, 0xbf, 0xed, 0xa5, 0x4d, 0xb9, 0x81, 0xb9, 0x69, 0x15, 0xfd,
+	0x08, 0x1a, 0x72, 0x01, 0x16, 0x3f, 0xa0, 0x29, 0x0f, 0x98, 0xf0, 0x49, 0xef, 0xbd, 0x2b, 0xf2,
+	0x60, 0x34, 0x9b, 0xe4, 0xf8, 0xc2, 0xb1, 0x97, 0xe7, 0x3d, 0x1b, 0x05, 0xe2, 0xa3, 0x54, 0x32,
+	0x9a, 0x4f, 0xb7, 0xf3, 0x59, 0xfc, 0xa0, 0x99, 0xa2, 0x4a, 0xdb, 0x79, 0x00, 0x9e, 0xe8, 0xb9,
+	0x56, 0x9f, 0xd8, 0x4f, 0x42, 0x31, 0x5d, 0x0a, 0x3b, 0xcb, 0x6b, 0xb8, 0xff, 0x4e, 0xae, 0x0f,
+	0xdd, 0x61, 0xd6, 0xa0, 0x69, 0x57, 0x82, 0x55, 0x93, 0x45, 0x78, 0x86, 0xa2, 0x78, 0x0c, 0xd5,
+	0x03, 0xd2, 0xb9, 0xc8, 0x87, 0x15, 0xb8, 0x03, 0x4e, 0x27, 0x4d, 0x3a, 0x39, 0xa5, 0x98, 0x74,
+	0x06, 0xba, 0xf1, 0xd8, 0x90, 0xf7, 0x05, 0xd4, 0x8c, 0x88, 0x36, 0xf0, 0x00, 0x16, 0xf0, 0x72,
+	0x94, 0xd8, 0xda, 0xae, 0xf9, 0xd7, 0xfb, 0xb1, 0x40, 0x7d, 0x75, 0xa8, 0x9b, 0x2b, 0x4f, 0x29,
+	0x9e, 0xd0, 0xb4, 0x5f, 0xb0, 0xea, 0xed, 0xc3, 0xe6, 0x94, 0xb3, 0xdb, 0xa8, 0x6f, 0x2f, 0xca,
+	0xff, 0xf3, 0x7f, 0xf6, 0x9f, 0x00, 0x00, 0x00, 0xff, 0xff, 0x82, 0xbe, 0x47, 0x22, 0x58, 0x18,
+	0x00, 0x00,
 }

@@ -21,6 +21,9 @@ tags
 /Godeps/_workspace/pkg
 /Godeps/_workspace/bin
 
+# Go vendored libs
+/vendor/*/
+
 # C build dirs
 **/build
 
@@ -49,3 +52,8 @@ _test/
 # site-local example files
 /examples/kubernetes/config.sh
 
+#pom generated file
+/java/jdbc/dependency-reduced-pom.xml
+
+# generated protobuf files
+/go/vt/.proto.tmp

@@ -105,6 +105,48 @@ func TestBuildValue(t *testing.T) {
 	}
 }
 
+func TestBuildConverted(t *testing.T) {
+	testcases := []struct {
+		typ querypb.Type
+		val interface{}
+		out Value
+	}{{
+		typ: Int64,
+		val: 123,
+		out: testVal(Int64, "123"),
+	}, {
+		typ: Int64,
+		val: "123",
+		out: testVal(Int64, "123"),
+	}, {
+		typ: Uint64,
+		val: "123",
+		out: testVal(Uint64, "123"),
+	}, {
+		typ: Int64,
+		val: []byte("123"),
+		out: testVal(Int64, "123"),
+	}, {
+		typ: Int64,
+		val: testVal(VarBinary, "123"),
+		out: testVal(Int64, "123"),
+	}, {
+		typ: Int64,
+		val: testVal(Float32, "123"),
+		out: testVal(Float32, "123"),
+	}}
+	for _, tcase := range testcases {
+		v, err := BuildConverted(tcase.typ, tcase.val)
+		if err != nil {
+			t.Errorf("BuildValue(%v, %#v) error: %v", tcase.typ, tcase.val, err)
+			continue
+		}
+		if !reflect.DeepEqual(v, tcase.out) {
+			t.Errorf("BuildValue(%v, %#v) = %v, want %v", tcase.typ, tcase.val, makePretty(v), makePretty(tcase.out))
+		}
+	}
+}
+
 const (
 	InvalidNeg = "-9223372036854775809"
 	MinNeg     = "-9223372036854775808"
@@ -536,14 +578,14 @@ func TestParseNumbers(t *testing.T) {
 		t.Error(err)
 	}
 	if uval != 1 {
-		t.Errorf("v.ParseInt64 = %d, want 1", uval)
+		t.Errorf("v.ParseUint64 = %d, want 1", uval)
 	}
 	fval, err := v.ParseFloat64()
 	if err != nil {
 		t.Error(err)
 	}
 	if fval != 1 {
-		t.Errorf("v.ParseInt64 = %d, want 1", fval)
+		t.Errorf("v.ParseFloat64 = %f, want 1", fval)
 	}
 }
 

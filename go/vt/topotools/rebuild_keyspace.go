@@ -8,11 +8,8 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
-	"sync"
 
-	"github.com/youtube/vitess/go/vt/concurrency"
 	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/tabletmanager/actionnode"
 	"github.com/youtube/vitess/go/vt/topo"
 	"github.com/youtube/vitess/go/vt/topo/topoproto"
 	"golang.org/x/net/context"
@@ -21,15 +18,14 @@ import (
 )
 
 // RebuildKeyspace rebuilds the serving graph data while locking out other changes.
-func RebuildKeyspace(ctx context.Context, log logutil.Logger, ts topo.Server, keyspace string, cells []string, rebuildSrvShards bool) error {
-	node := actionnode.RebuildKeyspace()
-	lockPath, err := node.LockKeyspace(ctx, ts, keyspace)
-	if err != nil {
-		return err
+func RebuildKeyspace(ctx context.Context, log logutil.Logger, ts topo.Server, keyspace string, cells []string) (err error) {
+	ctx, unlock, lockErr := ts.LockKeyspace(ctx, keyspace, "RebuildKeyspace")
+	if lockErr != nil {
+		return lockErr
 	}
+	defer unlock(&err)
 
-	err = rebuildKeyspace(ctx, log, ts, keyspace, cells, rebuildSrvShards)
-	return node.UnlockKeyspace(ctx, ts, keyspace, lockPath, err)
+	return RebuildKeyspaceLocked(ctx, log, ts, keyspace, cells)
 }
 
 // findCellsForRebuild will find all the cells in the given keyspace
@@ -45,62 +41,32 @@ func findCellsForRebuild(ki *topo.KeyspaceInfo, shardMap map[string]*topo.ShardI
 					ShardingColumnName: ki.ShardingColumnName,
 					ShardingColumnType: ki.ShardingColumnType,
 					ServedFrom:         ki.ComputeCellServedFrom(cell),
-					SplitShardCount:    ki.SplitShardCount,
 				}
 			}
 		}
 	}
 }
 
-// rebuildKeyspace should only be used with an action lock on the keyspace
+// RebuildKeyspaceLocked should only be used with an action lock on the keyspace
 // - otherwise the consistency of the serving graph data can't be
 // guaranteed.
 //
 // Take data from the global keyspace and rebuild the local serving
 // copies in each cell.
-func rebuildKeyspace(ctx context.Context, log logutil.Logger, ts topo.Server, keyspace string, cells []string, rebuildSrvShards bool) error {
+func RebuildKeyspaceLocked(ctx context.Context, log logutil.Logger, ts topo.Server, keyspace string, cells []string) error {
 	log.Infof("rebuildKeyspace %v", keyspace)
+	if err := topo.CheckKeyspaceLocked(ctx, keyspace); err != nil {
+		return err
+	}
 
 	ki, err := ts.GetKeyspace(ctx, keyspace)
 	if err != nil {
 		return err
 	}
 
-	var shardCache map[string]*topo.ShardInfo
-	if rebuildSrvShards {
-		shards, err := ts.GetShardNames(ctx, keyspace)
-		if err != nil {
-			return nil
-		}
-
-		// Rebuild all shards in parallel, save the shards
-		shardCache = make(map[string]*topo.ShardInfo)
-		wg := sync.WaitGroup{}
-		mu := sync.Mutex{}
-		rec := concurrency.FirstErrorRecorder{}
-		for _, shard := range shards {
-			wg.Add(1)
-			go func(shard string) {
-				if shardInfo, err := RebuildShard(ctx, log, ts, keyspace, shard, cells); err != nil {
-					rec.RecordError(fmt.Errorf("RebuildShard failed: %v/%v %v", keyspace, shard, err))
-				} else {
-					mu.Lock()
-					shardCache[shard] = shardInfo
-					mu.Unlock()
-				}
-				wg.Done()
-			}(shard)
-		}
-		wg.Wait()
-		if rec.HasErrors() {
-			return rec.Error()
-		}
-
-	} else {
-		shardCache, err = ts.FindAllShardsInKeyspace(ctx, keyspace)
-		if err != nil {
-			return err
-		}
+	shards, err := ts.FindAllShardsInKeyspace(ctx, keyspace)
+	if err != nil {
+		return err
 	}
 
 	// Build the list of cells to work on: we get the union
@@ -110,7 +76,7 @@ func rebuildKeyspace(ctx context.Context, log logutil.Logger, ts topo.Server, ke
 	//   key: cell
 	//   value: topo.SrvKeyspace object being built
 	srvKeyspaceMap := make(map[string]*topodatapb.SrvKeyspace)
-	findCellsForRebuild(ki, shardCache, cells, srvKeyspaceMap)
+	findCellsForRebuild(ki, shards, cells, srvKeyspaceMap)
 
 	// Then we add the cells from the keyspaces we might be 'ServedFrom'.
 	for _, ksf := range ki.ServedFroms {
@@ -122,13 +88,13 @@ func rebuildKeyspace(ctx context.Context, log logutil.Logger, ts topo.Server, ke
 	}
 
 	// for each entry in the srvKeyspaceMap map, we do the following:
-	// - read the SrvShard structures for each shard / cell
+	// - get the Shard structures for each shard / cell
 	// - if not present, build an empty one from global Shard
 	// - compute the union of the db types (replica, master, ...)
 	// - sort the shards in the list by range
 	// - check the ranges are compatible (no hole, covers everything)
 	for cell, srvKeyspace := range srvKeyspaceMap {
-		for _, si := range shardCache {
+		for _, si := range shards {
 			servedTypes := si.GetServedTypesPerCell(cell)
 
 			// for each type this shard is supposed to serve,

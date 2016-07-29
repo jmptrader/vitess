@@ -8,14 +8,13 @@ import (
 	"reflect"
 	"testing"
 
-	tproto "github.com/youtube/vitess/go/vt/tabletserver/proto"
-	"github.com/youtube/vitess/go/vt/vtgate/planbuilder"
+	"github.com/youtube/vitess/go/vt/tabletserver/querytypes"
 )
 
-var lhu planbuilder.Vindex
+var lhu Vindex
 
 func init() {
-	h, err := planbuilder.CreateVindex("lookup_hash_unique", map[string]interface{}{"Table": "t", "From": "fromc", "To": "toc"})
+	h, err := CreateVindex("lookup_hash_unique", "nn", map[string]string{"table": "t", "from": "fromc", "to": "toc"})
 	if err != nil {
 		panic(err)
 	}
@@ -30,7 +29,7 @@ func TestLookupHashUniqueCost(t *testing.T) {
 
 func TestLookupHashUniqueMap(t *testing.T) {
 	vc := &vcursor{numRows: 1}
-	got, err := lhu.(planbuilder.Unique).Map(vc, []interface{}{1, int32(2)})
+	got, err := lhu.(Unique).Map(vc, []interface{}{1, int32(2)})
 	if err != nil {
 		t.Error(err)
 	}
@@ -56,50 +55,43 @@ func TestLookupHashUniqueVerify(t *testing.T) {
 
 func TestLookupHashUniqueCreate(t *testing.T) {
 	vc := &vcursor{}
-	err := lhu.(planbuilder.Lookup).Create(vc, 1, []byte("\x16k@\xb4J\xbaK\xd6"))
+	err := lhu.(Lookup).Create(vc, 1, []byte("\x16k@\xb4J\xbaK\xd6"))
 	if err != nil {
 		t.Error(err)
 	}
-	wantQuery := &tproto.BoundQuery{
+	wantQuery := &querytypes.BoundQuery{
 		Sql: "insert into t(fromc, toc) values(:fromc, :toc)",
 		BindVariables: map[string]interface{}{
 			"fromc": 1,
 			"toc":   int64(1),
 		},
 	}
-	if !reflect.DeepEqual(vc.query, wantQuery) {
-		t.Errorf("vc.query = %#v, want %#v", vc.query, wantQuery)
-	}
-}
-
-func TestLookupHashUniqueGenerate(t *testing.T) {
-	_, ok := lhu.(planbuilder.LookupGenerator)
-	if ok {
-		t.Errorf("lhu.(planbuilder.LookupGenerator): true, want false")
+	if !reflect.DeepEqual(vc.bq, wantQuery) {
+		t.Errorf("vc.query = %#v, want %#v", vc.bq, wantQuery)
 	}
 }
 
 func TestLookupHashUniqueReverse(t *testing.T) {
-	_, ok := lhu.(planbuilder.Reversible)
+	_, ok := lhu.(Reversible)
 	if ok {
-		t.Errorf("lhu.(planbuilder.Reversible): true, want false")
+		t.Errorf("lhu.(Reversible): true, want false")
 	}
 }
 
 func TestLookupHashUniqueDelete(t *testing.T) {
 	vc := &vcursor{}
-	err := lhu.(planbuilder.Lookup).Delete(vc, []interface{}{1}, []byte("\x16k@\xb4J\xbaK\xd6"))
+	err := lhu.(Lookup).Delete(vc, []interface{}{1}, []byte("\x16k@\xb4J\xbaK\xd6"))
 	if err != nil {
 		t.Error(err)
 	}
-	wantQuery := &tproto.BoundQuery{
-		Sql: "delete from t where fromc in ::fromc and toc = :toc",
+	wantQuery := &querytypes.BoundQuery{
+		Sql: "delete from t where fromc = :fromc and toc = :toc",
 		BindVariables: map[string]interface{}{
-			"fromc": []interface{}{1},
+			"fromc": 1,
 			"toc":   int64(1),
 		},
 	}
-	if !reflect.DeepEqual(vc.query, wantQuery) {
-		t.Errorf("vc.query = %#v, want %#v", vc.query, wantQuery)
+	if !reflect.DeepEqual(vc.bq, wantQuery) {
+		t.Errorf("vc.query = %#v, want %#v", vc.bq, wantQuery)
 	}
 }

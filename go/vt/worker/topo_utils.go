@@ -10,8 +10,8 @@ import (
 	"math/rand"
 	"time"
 
+	"github.com/youtube/vitess/go/vt/discovery"
 	"github.com/youtube/vitess/go/vt/servenv"
-	"github.com/youtube/vitess/go/vt/topo"
 	"github.com/youtube/vitess/go/vt/topo/topoproto"
 	"github.com/youtube/vitess/go/vt/wrangler"
 	"golang.org/x/net/context"
@@ -20,79 +20,88 @@ import (
 )
 
 var (
-	minHealthyEndPoints = flag.Int("min_healthy_rdonly_endpoints", 2, "minimum number of healthy rdonly endpoints before taking out one")
-
-	// WaitForHealthyEndPointsTimeout intent is to wait for the
+	// waitForHealthyTabletsTimeout intends to wait for the
 	// healthcheck to automatically return rdonly instances which
 	// have been taken out by previous *Clone or *Diff runs.
 	// Therefore, the default for this variable must be higher
-	// than -health_check_interval.
-	// (it is public for tests to override it)
-	WaitForHealthyEndPointsTimeout = flag.Duration("wait_for_healthy_rdonly_endpoints_timeout", 60*time.Second, "maximum time to wait if less than --min_healthy_rdonly_endpoints are available")
+	// than vttablet's -health_check_interval.
+	waitForHealthyTabletsTimeout = flag.Duration("wait_for_healthy_rdonly_tablets_timeout", 60*time.Second, "maximum time to wait at the start if less than --min_healthy_rdonly_tablets are available")
 )
 
-// FindHealthyRdonlyEndPoint returns a random healthy endpoint.
+// FindHealthyRdonlyTablet returns a random healthy RDONLY tablet.
 // Since we don't want to use them all, we require at least
-// minHealthyEndPoints servers to be healthy.
-// May block up to -wait_for_healthy_rdonly_endpoints_timeout.
-func FindHealthyRdonlyEndPoint(ctx context.Context, wr *wrangler.Wrangler, cell, keyspace, shard string) (*topodatapb.TabletAlias, error) {
-	busywaitCtx, busywaitCancel := context.WithTimeout(ctx, *WaitForHealthyEndPointsTimeout)
-	defer busywaitCancel()
+// minHealthyRdonlyTablets servers to be healthy.
+// May block up to -wait_for_healthy_rdonly_tablets_timeout.
+func FindHealthyRdonlyTablet(ctx context.Context, wr *wrangler.Wrangler, healthCheck discovery.HealthCheck, cell, keyspace, shard string, minHealthyRdonlyTablets int) (*topodatapb.TabletAlias, error) {
+	if healthCheck == nil {
+		// No healthcheck instance provided. Create one.
+		healthCheck = discovery.NewHealthCheck(*remoteActionsTimeout, *healthcheckRetryDelay, *healthCheckTimeout)
+		watcher := discovery.NewShardReplicationWatcher(wr.TopoServer(), healthCheck, cell, keyspace, shard, *healthCheckTopologyRefresh, discovery.DefaultTopoReadConcurrency)
+		defer watcher.Stop()
+		defer healthCheck.Close()
+	}
 
-	var healthyEndpoints []*topodatapb.EndPoint
-	for {
-		select {
-		case <-busywaitCtx.Done():
-			return nil, fmt.Errorf("Not enough endpoints to choose from in (%v,%v/%v), have %v healthy ones, need at least %v Context Error: %v", cell, keyspace, shard, len(healthyEndpoints), *minHealthyEndPoints, busywaitCtx.Err())
-		default:
-		}
-
-		shortCtx, cancel := context.WithTimeout(ctx, *remoteActionsTimeout)
-		endPoints, _, err := wr.TopoServer().GetEndPoints(shortCtx, cell, keyspace, shard, topodatapb.TabletType_RDONLY)
-		cancel()
-		if err != nil {
-			if err == topo.ErrNoNode {
-				// If the node doesn't exist, count that as 0 available rdonly instances.
-				endPoints = &topodatapb.EndPoints{}
-			} else {
-				return nil, fmt.Errorf("GetEndPoints(%v,%v,%v,rdonly) failed: %v", cell, keyspace, shard, err)
-			}
-		}
-		healthyEndpoints = make([]*topodatapb.EndPoint, 0, len(endPoints.Entries))
-		for _, entry := range endPoints.Entries {
-			if len(entry.HealthMap) == 0 {
-				healthyEndpoints = append(healthyEndpoints, entry)
-			}
-		}
-		if len(healthyEndpoints) < *minHealthyEndPoints {
-			deadlineForLog, _ := busywaitCtx.Deadline()
-			wr.Logger().Infof("Waiting for enough endpoints to become available. available: %v required: %v Waiting up to %.1f more seconds.", len(healthyEndpoints), *minHealthyEndPoints, deadlineForLog.Sub(time.Now()).Seconds())
-			// Block for 1 second because 2 seconds is the -health_check_interval flag value in integration tests.
-			timer := time.NewTimer(1 * time.Second)
-			select {
-			case <-busywaitCtx.Done():
-				timer.Stop()
-			case <-timer.C:
-			}
-		} else {
-			break
-		}
+	healthyTablets, err := waitForHealthyRdonlyTablets(ctx, wr, healthCheck, cell, keyspace, shard, minHealthyRdonlyTablets, *waitForHealthyTabletsTimeout)
+	if err != nil {
+		return nil, err
 	}
 
 	// random server in the list is what we want
-	index := rand.Intn(len(healthyEndpoints))
-	return &topodatapb.TabletAlias{
-		Cell: cell,
-		Uid:  healthyEndpoints[index].Uid,
-	}, nil
+	index := rand.Intn(len(healthyTablets))
+	return healthyTablets[index].Tablet.Alias, nil
+}
+
+func waitForHealthyRdonlyTablets(ctx context.Context, wr *wrangler.Wrangler, healthCheck discovery.HealthCheck, cell, keyspace, shard string, minHealthyRdonlyTablets int, timeout time.Duration) ([]*discovery.TabletStats, error) {
+	busywaitCtx, busywaitCancel := context.WithTimeout(ctx, timeout)
+	defer busywaitCancel()
+
+	start := time.Now()
+	deadlineForLog, _ := busywaitCtx.Deadline()
+	wr.Logger().Infof("Waiting for enough healthy RDONLY tablets to become available in (%v,%v/%v). required: %v Waiting up to %.1f seconds.",
+		cell, keyspace, shard, minHealthyRdonlyTablets, deadlineForLog.Sub(time.Now()).Seconds())
+
+	// Wait for at least one RDONLY tablet initially before checking the list.
+	if err := discovery.WaitForTablets(busywaitCtx, healthCheck, cell, keyspace, shard, []topodatapb.TabletType{topodatapb.TabletType_RDONLY}); err != nil {
+		return nil, fmt.Errorf("error waiting for RDONLY tablets for (%v,%v/%v): %v", cell, keyspace, shard, err)
+	}
+
+	var healthyTablets []*discovery.TabletStats
+	for {
+		select {
+		case <-busywaitCtx.Done():
+			return nil, fmt.Errorf("not enough healthy RDONLY tablets to choose from in (%v,%v/%v), have %v healthy ones, need at least %v Context error: %v",
+				cell, keyspace, shard, len(healthyTablets), minHealthyRdonlyTablets, busywaitCtx.Err())
+		default:
+		}
+
+		healthyTablets = discovery.RemoveUnhealthyTablets(
+			healthCheck.GetTabletStatsFromTarget(keyspace, shard, topodatapb.TabletType_RDONLY))
+		if len(healthyTablets) >= minHealthyRdonlyTablets {
+			break
+		}
+
+		deadlineForLog, _ := busywaitCtx.Deadline()
+		wr.Logger().Infof("Waiting for enough healthy RDONLY tablets to become available (%v,%v/%v). available: %v required: %v Waiting up to %.1f more seconds.",
+			cell, keyspace, shard, len(healthyTablets), minHealthyRdonlyTablets, deadlineForLog.Sub(time.Now()).Seconds())
+		// Block for 1 second because 2 seconds is the -health_check_interval flag value in integration tests.
+		timer := time.NewTimer(1 * time.Second)
+		select {
+		case <-busywaitCtx.Done():
+			timer.Stop()
+		case <-timer.C:
+		}
+	}
+	wr.Logger().Infof("At least %v healthy RDONLY tablets are available in (%v,%v/%v) (required: %v). Took %.1f seconds to find this out.",
+		len(healthyTablets), cell, keyspace, shard, minHealthyRdonlyTablets, time.Now().Sub(start).Seconds())
+	return healthyTablets, nil
 }
 
 // FindWorkerTablet will:
 // - find a rdonly instance in the keyspace / shard
 // - mark it as worker
 // - tag it with our worker process
-func FindWorkerTablet(ctx context.Context, wr *wrangler.Wrangler, cleaner *wrangler.Cleaner, cell, keyspace, shard string) (*topodatapb.TabletAlias, error) {
-	tabletAlias, err := FindHealthyRdonlyEndPoint(ctx, wr, cell, keyspace, shard)
+func FindWorkerTablet(ctx context.Context, wr *wrangler.Wrangler, cleaner *wrangler.Cleaner, healthCheck discovery.HealthCheck, cell, keyspace, shard string, minHealthyRdonlyTablets int) (*topodatapb.TabletAlias, error) {
+	tabletAlias, err := FindHealthyRdonlyTablet(ctx, wr, healthCheck, cell, keyspace, shard, minHealthyRdonlyTablets)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +111,7 @@ func FindWorkerTablet(ctx context.Context, wr *wrangler.Wrangler, cleaner *wrang
 	ourURL := servenv.ListeningURL.String()
 	wr.Logger().Infof("Adding tag[worker]=%v to tablet %v", ourURL, topoproto.TabletAliasString(tabletAlias))
 	shortCtx, cancel := context.WithTimeout(ctx, *remoteActionsTimeout)
-	err = wr.TopoServer().UpdateTabletFields(shortCtx, tabletAlias, func(tablet *topodatapb.Tablet) error {
+	_, err = wr.TopoServer().UpdateTabletFields(shortCtx, tabletAlias, func(tablet *topodatapb.Tablet) error {
 		if tablet.Tags == nil {
 			tablet.Tags = make(map[string]string)
 		}
@@ -127,9 +136,7 @@ func FindWorkerTablet(ctx context.Context, wr *wrangler.Wrangler, cleaner *wrang
 	}
 
 	// Record a clean-up action to take the tablet back to rdonly.
-	// We will alter this one later on and let the tablet go back to
-	// 'spare' if we have stopped replication for too long on it.
-	wrangler.RecordChangeSlaveTypeAction(cleaner, tabletAlias, topodatapb.TabletType_RDONLY)
+	wrangler.RecordChangeSlaveTypeAction(cleaner, tabletAlias, topodatapb.TabletType_WORKER, topodatapb.TabletType_RDONLY)
 	return tabletAlias, nil
 }
 

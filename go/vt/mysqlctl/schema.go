@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 
+	"golang.org/x/net/context"
+
 	log "github.com/golang/glog"
 
 	"github.com/youtube/vitess/go/vt/mysqlctl/tmutils"
@@ -20,10 +22,11 @@ var autoIncr = regexp.MustCompile(" AUTO_INCREMENT=\\d+")
 // GetSchema returns the schema for database for tables listed in
 // tables. If tables is empty, return the schema for all tables.
 func (mysqld *Mysqld) GetSchema(dbName string, tables, excludeTables []string, includeViews bool) (*tabletmanagerdatapb.SchemaDefinition, error) {
+	ctx := context.TODO()
 	sd := &tabletmanagerdatapb.SchemaDefinition{}
 
 	// get the database creation command
-	qr, fetchErr := mysqld.FetchSuperQuery("SHOW CREATE DATABASE IF NOT EXISTS " + dbName)
+	qr, fetchErr := mysqld.FetchSuperQuery(ctx, fmt.Sprintf("SHOW CREATE DATABASE IF NOT EXISTS `%s`", dbName))
 	if fetchErr != nil {
 		return nil, fetchErr
 	}
@@ -37,7 +40,7 @@ func (mysqld *Mysqld) GetSchema(dbName string, tables, excludeTables []string, i
 	if !includeViews {
 		sql += " AND table_type = '" + tmutils.TableBaseTable + "'"
 	}
-	qr, err := mysqld.FetchSuperQuery(sql)
+	qr, err := mysqld.FetchSuperQuery(ctx, sql)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +72,7 @@ func (mysqld *Mysqld) GetSchema(dbName string, tables, excludeTables []string, i
 			}
 		}
 
-		qr, fetchErr := mysqld.FetchSuperQuery("SHOW CREATE TABLE " + dbName + "." + tableName)
+		qr, fetchErr := mysqld.FetchSuperQuery(ctx, fmt.Sprintf("SHOW CREATE TABLE `%s`.`%s`", dbName, tableName))
 		if fetchErr != nil {
 			return nil, fetchErr
 		}
@@ -130,12 +133,12 @@ func ResolveTables(mysqld MysqlDaemon, dbName string, tables []string) ([]string
 
 // GetColumns returns the columns of table.
 func (mysqld *Mysqld) GetColumns(dbName, table string) ([]string, error) {
-	conn, err := mysqld.dbaPool.Get(0)
+	conn, err := mysqld.dbaPool.Get(context.TODO())
 	if err != nil {
 		return nil, err
 	}
 	defer conn.Recycle()
-	qr, err := conn.ExecuteFetch(fmt.Sprintf("select * from %v.%v where 1=0", dbName, table), 0, true)
+	qr, err := conn.ExecuteFetch(fmt.Sprintf("SELECT * FROM `%s`.`%s` WHERE 1=0", dbName, table), 0, true)
 	if err != nil {
 		return nil, err
 	}
@@ -149,12 +152,12 @@ func (mysqld *Mysqld) GetColumns(dbName, table string) ([]string, error) {
 
 // GetPrimaryKeyColumns returns the primary key columns of table.
 func (mysqld *Mysqld) GetPrimaryKeyColumns(dbName, table string) ([]string, error) {
-	conn, err := mysqld.dbaPool.Get(0)
+	conn, err := mysqld.dbaPool.Get(context.TODO())
 	if err != nil {
 		return nil, err
 	}
 	defer conn.Recycle()
-	qr, err := conn.ExecuteFetch(fmt.Sprintf("show index from %v.%v", dbName, table), 100, true)
+	qr, err := conn.ExecuteFetch(fmt.Sprintf("SHOW INDEX FROM `%v`.`%v`", dbName, table), 100, true)
 	if err != nil {
 		return nil, err
 	}
@@ -198,58 +201,77 @@ func (mysqld *Mysqld) GetPrimaryKeyColumns(dbName, table string) ([]string, erro
 	return columns, err
 }
 
-// PreflightSchemaChange will apply the schema change to a fake
-// database that has the same schema as the target database, see if it
-// works.
-func (mysqld *Mysqld) PreflightSchemaChange(dbName string, change string) (*tmutils.SchemaChangeResult, error) {
-	// gather current schema on real database
-	beforeSchema, err := mysqld.GetSchema(dbName, nil, nil, true)
+// PreflightSchemaChange checks the schema changes in "changes" by applying them
+// to an intermediate database that has the same schema as the target database.
+func (mysqld *Mysqld) PreflightSchemaChange(dbName string, changes []string) ([]*tabletmanagerdatapb.SchemaChangeResult, error) {
+	results := make([]*tabletmanagerdatapb.SchemaChangeResult, len(changes))
+
+	// Get current schema from the real database.
+	originalSchema, err := mysqld.GetSchema(dbName, nil, nil, true)
 	if err != nil {
 		return nil, err
 	}
 
-	// populate temporary database with it
-	sql := "SET sql_log_bin = 0;\n"
-	sql += "DROP DATABASE IF EXISTS _vt_preflight;\n"
-	sql += "CREATE DATABASE _vt_preflight;\n"
-	sql += "USE _vt_preflight;\n"
-	for _, td := range beforeSchema.TableDefinitions {
+	// Populate temporary database with it.
+	initialCopySQL := "SET sql_log_bin = 0;\n"
+	initialCopySQL += "DROP DATABASE IF EXISTS _vt_preflight;\n"
+	initialCopySQL += "CREATE DATABASE _vt_preflight;\n"
+	initialCopySQL += "USE _vt_preflight;\n"
+	for _, td := range originalSchema.TableDefinitions {
 		if td.Type == tmutils.TableBaseTable {
-			sql += td.Schema + ";\n"
+			initialCopySQL += td.Schema + ";\n"
 		}
 	}
-	if err = mysqld.executeMysqlCommands(mysqld.dba.Uname, sql); err != nil {
+	for _, td := range originalSchema.TableDefinitions {
+		if td.Type == tmutils.TableView {
+			// Views will have {{.DatabaseName}} in there, replace
+			// it with _vt_preflight
+			s := strings.Replace(td.Schema, "`{{.DatabaseName}}`", "`_vt_preflight`", -1)
+			initialCopySQL += s + ";\n"
+		}
+	}
+	if err = mysqld.executeMysqlCommands(mysqld.dba.Uname, initialCopySQL); err != nil {
 		return nil, err
 	}
 
-	// apply schema change to the temporary database
-	sql = "SET sql_log_bin = 0;\n"
-	sql += "USE _vt_preflight;\n"
-	sql += change
-	if err = mysqld.executeMysqlCommands(mysqld.dba.Uname, sql); err != nil {
-		return nil, err
-	}
+	// For each change, record the schema before and after.
+	for i, change := range changes {
+		beforeSchema, err := mysqld.GetSchema("_vt_preflight", nil, nil, true)
+		if err != nil {
+			return nil, err
+		}
 
-	// get the result
-	afterSchema, err := mysqld.GetSchema("_vt_preflight", nil, nil, true)
-	if err != nil {
-		return nil, err
+		// apply schema change to the temporary database
+		sql := "SET sql_log_bin = 0;\n"
+		sql += "USE _vt_preflight;\n"
+		sql += change
+		if err = mysqld.executeMysqlCommands(mysqld.dba.Uname, sql); err != nil {
+			return nil, err
+		}
+
+		// get the result
+		afterSchema, err := mysqld.GetSchema("_vt_preflight", nil, nil, true)
+		if err != nil {
+			return nil, err
+		}
+
+		results[i] = &tabletmanagerdatapb.SchemaChangeResult{BeforeSchema: beforeSchema, AfterSchema: afterSchema}
 	}
 
 	// and clean up the extra database
-	sql = "SET sql_log_bin = 0;\n"
-	sql += "DROP DATABASE _vt_preflight;\n"
-	if err = mysqld.executeMysqlCommands(mysqld.dba.Uname, sql); err != nil {
+	dropSQL := "SET sql_log_bin = 0;\n"
+	dropSQL += "DROP DATABASE _vt_preflight;\n"
+	if err = mysqld.executeMysqlCommands(mysqld.dba.Uname, dropSQL); err != nil {
 		return nil, err
 	}
 
-	return &tmutils.SchemaChangeResult{BeforeSchema: beforeSchema, AfterSchema: afterSchema}, nil
+	return results, nil
 }
 
 // ApplySchemaChange will apply the schema change to the given database.
-func (mysqld *Mysqld) ApplySchemaChange(dbName string, change *tmutils.SchemaChange) (*tmutils.SchemaChangeResult, error) {
+func (mysqld *Mysqld) ApplySchemaChange(dbName string, change *tmutils.SchemaChange) (*tabletmanagerdatapb.SchemaChangeResult, error) {
 	// check current schema matches
-	beforeSchema, err := mysqld.GetSchema(dbName, nil, nil, false)
+	beforeSchema, err := mysqld.GetSchema(dbName, nil, nil, true)
 	if err != nil {
 		return nil, err
 	}
@@ -267,7 +289,7 @@ func (mysqld *Mysqld) ApplySchemaChange(dbName string, change *tmutils.SchemaCha
 					// no diff between the schema we expect
 					// after the change and the current
 					// schema, we already applied it
-					return &tmutils.SchemaChangeResult{
+					return &tabletmanagerdatapb.SchemaChangeResult{
 						BeforeSchema: beforeSchema,
 						AfterSchema:  beforeSchema}, nil
 				}
@@ -287,7 +309,7 @@ func (mysqld *Mysqld) ApplySchemaChange(dbName string, change *tmutils.SchemaCha
 	}
 
 	// add a 'use XXX' in front of the SQL
-	sql = "USE " + dbName + ";\n" + sql
+	sql = fmt.Sprintf("USE `%s`;\n%s", dbName, sql)
 
 	// execute the schema change using an external mysql process
 	// (to benefit from the extra commands in mysql cli)
@@ -296,7 +318,7 @@ func (mysqld *Mysqld) ApplySchemaChange(dbName string, change *tmutils.SchemaCha
 	}
 
 	// get AfterSchema
-	afterSchema, err := mysqld.GetSchema(dbName, nil, nil, false)
+	afterSchema, err := mysqld.GetSchema(dbName, nil, nil, true)
 	if err != nil {
 		return nil, err
 	}
@@ -316,5 +338,5 @@ func (mysqld *Mysqld) ApplySchemaChange(dbName string, change *tmutils.SchemaCha
 		}
 	}
 
-	return &tmutils.SchemaChangeResult{BeforeSchema: beforeSchema, AfterSchema: afterSchema}, nil
+	return &tabletmanagerdatapb.SchemaChangeResult{BeforeSchema: beforeSchema, AfterSchema: afterSchema}, nil
 }

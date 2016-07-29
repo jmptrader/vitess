@@ -5,8 +5,6 @@
 %{
 package sqlparser
 
-import "strings"
-
 func setParseTree(yylex interface{}, stmt Statement) {
   yylex.(*Tokenizer).ParseTree = stmt
 }
@@ -47,7 +45,6 @@ func forceEOF(yylex interface{}) {
   colName     *ColName
   tableExprs  TableExprs
   tableExpr   TableExpr
-  smTableExpr SimpleTableExpr
   tableName   *TableName
   indexHints  *IndexHints
   expr        Expr
@@ -67,15 +64,17 @@ func forceEOF(yylex interface{}) {
   insRows     InsertRows
   updateExprs UpdateExprs
   updateExpr  *UpdateExpr
-  sqlID       SQLName
-  sqlIDs      []SQLName
+  colIdent    ColIdent
+  colIdents   []ColIdent
+  tableIdent  TableIdent
 }
 
 %token LEX_ERROR
-%left <empty> UNION MINUS EXCEPT INTERSECT
+%left <empty> UNION
 %token <empty> SELECT INSERT UPDATE DELETE FROM WHERE GROUP HAVING ORDER BY LIMIT FOR
-%token <empty> ALL DISTINCT AS EXISTS ASC DESC INTO DUPLICATE KEY DEFAULT SET LOCK KEYRANGE
+%token <empty> ALL DISTINCT AS EXISTS ASC DESC INTO DUPLICATE KEY DEFAULT SET LOCK
 %token <empty> VALUES LAST_INSERT_ID
+%token <empty> NEXT VALUE
 %left <empty> JOIN STRAIGHT_JOIN LEFT RIGHT INNER OUTER CROSS NATURAL USE FORCE
 %left <empty> ON
 %token <empty> '(' ',' ')'
@@ -84,13 +83,13 @@ func forceEOF(yylex interface{}) {
 
 // Precedence dictated by mysql. But the vitess grammar is simplified.
 // Some of these operators don't conflict in our situation. Nevertheless,
-// it's better to have thesed listed in the correct order. Also, we don't
+// it's better to have these listed in the correct order. Also, we don't
 // support all operators yet.
 %left <empty> OR
 %left <empty> AND
 %right <empty> NOT
-%right <empty> BETWEEN CASE WHEN THEN ELSE
-%left <empty> '=' '<' '>' LE GE NE NULL_SAFE_EQUAL IS LIKE IN
+%left <empty> BETWEEN CASE WHEN THEN ELSE
+%left <empty> '=' '<' '>' LE GE NE NULL_SAFE_EQUAL IS LIKE REGEXP IN
 %left <empty> '|'
 %left <empty> '&'
 %left <empty> SHIFT_LEFT SHIFT_RIGHT
@@ -98,6 +97,7 @@ func forceEOF(yylex interface{}) {
 %left <empty> '*' '/' '%'
 %left <empty> '^'
 %right <empty> '~' UNARY
+%right <empty> INTERVAL
 %nonassoc <empty> '.'
 %left <empty> END
 
@@ -106,7 +106,8 @@ func forceEOF(yylex interface{}) {
 %token <empty> TABLE INDEX VIEW TO IGNORE IF UNIQUE USING
 %token <empty> SHOW DESCRIBE EXPLAIN
 
-%start any_command
+// MySQL reserved words that are unused by this grammar will map to this token.
+%token <empty> UNUSED
 
 %type <statement> command
 %type <selStmt> select_statement
@@ -115,17 +116,16 @@ func forceEOF(yylex interface{}) {
 %type <statement> analyze_statement other_statement
 %type <bytes2> comment_opt comment_list
 %type <str> union_op
-%type <str> distinct_opt
+%type <str> distinct_opt straight_join_opt
 %type <selectExprs> select_expression_list
 %type <selectExpr> select_expression
 %type <expr> expression
-%type <tableExprs> table_expression_list
-%type <tableExpr> table_expression
-%type <str> join_type
-%type <smTableExpr> simple_table_expression
-%type <tableName> dml_table_expression
+%type <tableExprs> table_references
+%type <tableExpr> table_reference table_factor join_table
+%type <str> inner_join outer_join natural_join
+%type <tableName> table_name
 %type <indexHints> index_hint_list
-%type <sqlIDs> index_list
+%type <colIdents> index_list
 %type <boolExpr> where_expression_opt
 %type <boolExpr> boolean_expression condition
 %type <str> compare
@@ -136,7 +136,6 @@ func forceEOF(yylex interface{}) {
 %type <valExprs> value_expression_list
 %type <values> tuple_list
 %type <rowTuple> row_tuple
-%type <str> keyword_as_func
 %type <subquery> subquery
 %type <colName> column_name
 %type <caseExpr> case_expression
@@ -154,11 +153,16 @@ func forceEOF(yylex interface{}) {
 %type <updateExprs> on_dup_opt
 %type <updateExprs> update_list
 %type <updateExpr> update_expression
+%type <empty> for_from
 %type <str> ignore_opt
-%type <empty> exists_opt not_exists_opt non_rename_operation to_opt constraint_opt using_opt
-%type <sqlID> sql_id as_lower_opt
-%type <sqlID> table_id as_opt
+%type <byt> exists_opt
+%type <empty> not_exists_opt non_rename_operation to_opt constraint_opt using_opt
+%type <colIdent> sql_id as_ci_opt
+%type <tableIdent> table_id as_opt_id
+%type <empty> as_opt
 %type <empty> force_eof
+
+%start any_command
 
 %%
 
@@ -185,9 +189,17 @@ command:
 | other_statement
 
 select_statement:
-  SELECT comment_opt distinct_opt select_expression_list FROM table_expression_list where_expression_opt group_by_opt having_opt order_by_opt limit_opt lock_opt
+  SELECT comment_opt distinct_opt straight_join_opt select_expression_list FROM table_references where_expression_opt group_by_opt having_opt order_by_opt limit_opt lock_opt
   {
-    $$ = &Select{Comments: Comments($2), Distinct: $3, SelectExprs: $4, From: $6, Where: NewWhere(WhereStr, $7), GroupBy: GroupBy($8), Having: NewWhere(HavingStr, $9), OrderBy: $10, Limit: $11, Lock: $12}
+    $$ = &Select{Comments: Comments($2), Distinct: $3, Hints: $4, SelectExprs: $5, From: $7, Where: NewWhere(WhereStr, $8), GroupBy: GroupBy($9), Having: NewWhere(HavingStr, $10), OrderBy: $11, Limit: $12, Lock: $13}
+  }
+| SELECT comment_opt NEXT sql_id for_from table_name
+  {
+    if $4.Lowered() != "value" {
+      yylex.Error("expecting value after next")
+      return 1
+    }
+    $$ = &Select{Comments: Comments($2), SelectExprs: SelectExprs{Nextval{}}, From: TableExprs{&AliasedTableExpr{Expr: $6}}}
   }
 | select_statement union_op select_statement %prec UNION
   {
@@ -195,29 +207,29 @@ select_statement:
   }
 
 insert_statement:
-  INSERT comment_opt ignore_opt INTO dml_table_expression column_list_opt row_list on_dup_opt
+  INSERT comment_opt ignore_opt INTO table_name column_list_opt row_list on_dup_opt
   {
     $$ = &Insert{Comments: Comments($2), Ignore: $3, Table: $5, Columns: $6, Rows: $7, OnDup: OnDup($8)}
   }
-| INSERT comment_opt ignore_opt INTO dml_table_expression SET update_list on_dup_opt
+| INSERT comment_opt ignore_opt INTO table_name SET update_list on_dup_opt
   {
     cols := make(Columns, 0, len($7))
     vals := make(ValTuple, 0, len($7))
-    for _, col := range $7 {
-      cols = append(cols, &NonStarExpr{Expr: col.Name})
-      vals = append(vals, col.Expr)
+    for _, updateList := range $7 {
+      cols = append(cols, updateList.Name)
+      vals = append(vals, updateList.Expr)
     }
     $$ = &Insert{Comments: Comments($2), Ignore: $3, Table: $5, Columns: cols, Rows: Values{vals}, OnDup: OnDup($8)}
   }
 
 update_statement:
-  UPDATE comment_opt dml_table_expression SET update_list where_expression_opt order_by_opt limit_opt
+  UPDATE comment_opt table_name SET update_list where_expression_opt order_by_opt limit_opt
   {
     $$ = &Update{Comments: Comments($2), Table: $3, Exprs: $5, Where: NewWhere(WhereStr, $6), OrderBy: $7, Limit: $8}
   }
 
 delete_statement:
-  DELETE comment_opt FROM dml_table_expression where_expression_opt order_by_opt limit_opt
+  DELETE comment_opt FROM table_name where_expression_opt order_by_opt limit_opt
   {
     $$ = &Delete{Comments: Comments($2), Table: $4, Where: NewWhere(WhereStr, $5), OrderBy: $6, Limit: $7}
   }
@@ -240,7 +252,7 @@ create_statement:
   }
 | CREATE VIEW sql_id force_eof
   {
-    $$ = &DDL{Action: CreateStr, NewName: SQLName($3)}
+    $$ = &DDL{Action: CreateStr, NewName: TableIdent($3.Lowered())}
   }
 
 alter_statement:
@@ -255,7 +267,7 @@ alter_statement:
   }
 | ALTER VIEW sql_id force_eof
   {
-    $$ = &DDL{Action: AlterStr, Table: SQLName($3), NewName: SQLName($3)}
+    $$ = &DDL{Action: AlterStr, Table: TableIdent($3.Lowered()), NewName: TableIdent($3.Lowered())}
   }
 
 rename_statement:
@@ -267,7 +279,11 @@ rename_statement:
 drop_statement:
   DROP TABLE exists_opt table_id
   {
-    $$ = &DDL{Action: DropStr, Table: $4}
+    var exists bool
+    if $3 != 0 {
+      exists = true
+    }
+    $$ = &DDL{Action: DropStr, Table: $4, IfExists: exists}
   }
 | DROP INDEX ID ON table_id
   {
@@ -276,7 +292,11 @@ drop_statement:
   }
 | DROP VIEW exists_opt sql_id force_eof
   {
-    $$ = &DDL{Action: DropStr, Table: SQLName($4)}
+    var exists bool
+        if $3 != 0 {
+          exists = true
+        }
+    $$ = &DDL{Action: DropStr, Table: TableIdent($4.Lowered()), IfExists: exists}
   }
 
 analyze_statement:
@@ -327,17 +347,9 @@ union_op:
   {
     $$ = UnionAllStr
   }
-| MINUS
+| UNION DISTINCT
   {
-    $$ = SetMinusStr
-  }
-| EXCEPT
-  {
-    $$ = ExceptStr
-  }
-| INTERSECT
-  {
-    $$ = IntersectStr
+    $$ = UnionDistinctStr
   }
 
 distinct_opt:
@@ -347,6 +359,15 @@ distinct_opt:
 | DISTINCT
   {
     $$ = DistinctStr
+  }
+
+straight_join_opt:
+  {
+    $$ = ""
+  }
+| STRAIGHT_JOIN
+  {
+    $$ = StraightJoinHint
   }
 
 select_expression_list:
@@ -364,7 +385,7 @@ select_expression:
   {
     $$ = &StarExpr{}
   }
-| expression as_lower_opt
+| expression as_ci_opt
   {
     $$ = &NonStarExpr{Expr: $1, As: $2}
   }
@@ -383,9 +404,9 @@ expression:
     $$ = $1
   }
 
-as_lower_opt:
+as_ci_opt:
   {
-    $$ = ""
+    $$ = ColIdent{}
   }
 | sql_id
   {
@@ -396,35 +417,65 @@ as_lower_opt:
     $$ = $2
   }
 
-table_expression_list:
-  table_expression
+table_references:
+  table_reference
   {
     $$ = TableExprs{$1}
   }
-| table_expression_list ',' table_expression
+| table_references ',' table_reference
   {
     $$ = append($$, $3)
   }
 
-table_expression:
-  simple_table_expression as_opt index_hint_list
+table_reference:
+  table_factor
+| join_table
+
+table_factor:
+  table_name as_opt_id index_hint_list
   {
     $$ = &AliasedTableExpr{Expr:$1, As: $2, Hints: $3}
   }
-| openb table_expression closeb
+| subquery as_opt table_id
   {
-    $$ = &ParenTableExpr{Expr: $2}
+    $$ = &AliasedTableExpr{Expr:$1, As: $3}
   }
-| table_expression join_type table_expression %prec JOIN
+| openb table_references closeb
+  {
+    $$ = &ParenTableExpr{Exprs: $2}
+  }
+
+// There is a grammar conflict here:
+// 1: INSERT INTO a SELECT * FROM b JOIN c ON b.i = c.i
+// 2: INSERT INTO a SELECT * FROM b JOIN c ON DUPLICATE KEY UPDATE a.i = 1
+// When yacc encounters the ON clause, it cannot determine which way to
+// resolve. The %prec override below makes the parser choose the
+// first construct, which automatically makes the second construct a
+// syntax error. This is the same behavior as MySQL.
+join_table:
+  table_reference inner_join table_factor %prec JOIN
   {
     $$ = &JoinTableExpr{LeftExpr: $1, Join: $2, RightExpr: $3}
   }
-| table_expression join_type table_expression ON boolean_expression %prec JOIN
+| table_reference inner_join table_factor ON boolean_expression
   {
     $$ = &JoinTableExpr{LeftExpr: $1, Join: $2, RightExpr: $3, On: $5}
   }
+| table_reference outer_join table_reference ON boolean_expression
+  {
+    $$ = &JoinTableExpr{LeftExpr: $1, Join: $2, RightExpr: $3, On: $5}
+  }
+| table_reference natural_join table_factor
+  {
+    $$ = &JoinTableExpr{LeftExpr: $1, Join: $2, RightExpr: $3}
+  }
 
 as_opt:
+  { $$ = struct{}{} }
+| AS
+  { $$ = struct{}{} }
+
+as_opt_id:
   {
     $$ = ""
   }
@@ -437,8 +488,16 @@ as_opt:
     $$ = $2
   }
 
-join_type:
+inner_join:
   JOIN
+  {
+    $$ = JoinStr
+  }
+| INNER JOIN
+  {
+    $$ = JoinStr
+  }
+| CROSS JOIN
   {
     $$ = JoinStr
   }
@@ -446,7 +505,9 @@ join_type:
   {
     $$ = StraightJoinStr
   }
-| LEFT JOIN
+
+outer_join:
+  LEFT JOIN
   {
     $$ = LeftJoinStr
   }
@@ -462,34 +523,22 @@ join_type:
   {
     $$ = RightJoinStr
   }
-| INNER JOIN
-  {
-    $$ = JoinStr
-  }
-| CROSS JOIN
-  {
-    $$ = CrossJoinStr
-  }
-| NATURAL JOIN
+
+natural_join:
+ NATURAL JOIN
   {
     $$ = NaturalJoinStr
   }
-
-simple_table_expression:
-  table_id
+| NATURAL outer_join
   {
-    $$ = &TableName{Name: $1}
-  }
-| table_id '.' table_id
-  {
-    $$ = &TableName{Qualifier: $1, Name: $3}
-  }
-| subquery
-  {
-    $$ = $1
+    if $2 == LeftJoinStr {
+      $$ = NaturalLeftJoinStr
+    } else {
+      $$ = NaturalRightJoinStr
+    }
   }
 
-dml_table_expression:
+table_name:
   table_id
   {
     $$ = &TableName{Name: $1}
@@ -519,7 +568,7 @@ index_hint_list:
 index_list:
   sql_id
   {
-    $$ = []SQLName{$1}
+    $$ = []ColIdent{$1}
   }
 | index_list ',' sql_id
   {
@@ -587,6 +636,14 @@ condition:
   {
     $$ = &ComparisonExpr{Left: $1, Operator: NotLikeStr, Right: $4}
   }
+| value_expression REGEXP value_expression
+  {
+    $$ = &ComparisonExpr{Left: $1, Operator: RegexpStr, Right: $3}
+  }
+| value_expression NOT REGEXP value_expression
+  {
+    $$ = &ComparisonExpr{Left: $1, Operator: NotRegexpStr, Right: $4}
+  }
 | value_expression BETWEEN value_expression AND value_expression
   {
     $$ = &RangeCond{Left: $1, Operator: BetweenStr, From: $3, To: $5}
@@ -602,10 +659,6 @@ condition:
 | EXISTS subquery
   {
     $$ = &ExistsExpr{Subquery: $2}
-  }
-| KEYRANGE openb value ',' value closeb
-  {
-    $$ = &KeyrangeExpr{Start: $3, End: $5}
   }
 
 is_suffix:
@@ -772,31 +825,33 @@ value_expression:
   {
     $$ = &UnaryExpr{Operator: TildaStr, Expr: $2}
   }
-| sql_id openb closeb
+| INTERVAL value_expression sql_id
+  {
+    // This rule prevents the usage of INTERVAL
+    // as a function. If support is needed for that,
+    // we'll need to revisit this. The solution
+    // will be non-trivial because of grammar conflicts.
+    $$ = &IntervalExpr{Expr: $2, Unit: $3}
+  }
+| table_id openb closeb
   {
     $$ = &FuncExpr{Name: string($1)}
   }
-| sql_id openb select_expression_list closeb
+| table_id openb select_expression_list closeb
   {
     $$ = &FuncExpr{Name: string($1), Exprs: $3}
   }
-| sql_id openb DISTINCT select_expression_list closeb
+| table_id openb DISTINCT select_expression_list closeb
   {
     $$ = &FuncExpr{Name: string($1), Distinct: true, Exprs: $4}
   }
-| keyword_as_func openb select_expression_list closeb
+| IF openb select_expression_list closeb
   {
-    $$ = &FuncExpr{Name: $1, Exprs: $3}
+    $$ = &FuncExpr{Name: "if", Exprs: $3}
   }
 | case_expression
   {
     $$ = $1
-  }
-
-keyword_as_func:
-  IF
-  {
-    $$ = "if"
   }
 
 case_expression:
@@ -846,7 +901,11 @@ column_name:
   }
 | table_id '.' sql_id
   {
-    $$ = &ColName{Qualifier: $1, Name: $3}
+    $$ = &ColName{Qualifier: &TableName{Name: $1}, Name: $3}
+  }
+| table_id '.' table_id '.' sql_id
+  {
+    $$ = &ColName{Qualifier: &TableName{Qualifier: $1, Name: $3}, Name: $5}
   }
 
 value:
@@ -946,11 +1005,11 @@ lock_opt:
   }
 | LOCK IN sql_id sql_id
   {
-    if $3 != "share" {
+    if $3.Lowered() != "share" {
       yylex.Error("expecting share")
       return 1
     }
-    if $4 != "mode" {
+    if $4.Lowered() != "mode" {
       yylex.Error("expecting mode")
       return 1
     }
@@ -967,13 +1026,13 @@ column_list_opt:
   }
 
 column_list:
-  column_name
+  sql_id
   {
-    $$ = Columns{&NonStarExpr{Expr: $1}}
+    $$ = Columns{$1}
   }
-| column_list ',' column_name
+| column_list ',' sql_id
   {
-    $$ = append($$, &NonStarExpr{Expr: $3})
+    $$ = append($$, $3)
   }
 
 on_dup_opt:
@@ -1026,15 +1085,19 @@ update_list:
   }
 
 update_expression:
-  column_name '=' value_expression
+  sql_id '=' value_expression
   {
     $$ = &UpdateExpr{Name: $1, Expr: $3}
   }
 
+for_from:
+  FOR
+| FROM
+
 exists_opt:
-  { $$ = struct{}{} }
+  { $$ = 0 }
 | IF EXISTS
-  { $$ = struct{}{} }
+  { $$ = 1 }
 
 not_exists_opt:
   { $$ = struct{}{} }
@@ -1054,6 +1117,8 @@ non_rename_operation:
 | DROP
   { $$ = struct{}{} }
 | ORDER
+  { $$ = struct{}{} }
+| UNUSED
   { $$ = struct{}{} }
 | ID
   { $$ = struct{}{} }
@@ -1076,13 +1141,13 @@ using_opt:
 sql_id:
   ID
   {
-    $$ = SQLName(strings.ToLower(string($1)))
+    $$ = NewColIdent(string($1))
   }
 
 table_id:
   ID
   {
-    $$ = SQLName($1)
+    $$ = TableIdent($1)
   }
 
 openb:

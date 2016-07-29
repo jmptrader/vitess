@@ -47,7 +47,7 @@ type Conn interface {
 	// a connection to stop ongoing communication.
 	Shutdown()
 	// Fields returns the current fields description for the query
-	Fields() []*querypb.Field
+	Fields() ([]*querypb.Field, error)
 	// ID returns the connection id.
 	ID() int64
 	// FetchNext returns the next row for a query

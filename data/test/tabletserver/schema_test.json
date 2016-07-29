@@ -25,6 +25,12 @@
         "Category": 0,
         "IsAuto": false,
         "Default": "MA=="
+      },
+      {
+        "Name": "CamelCase",
+        "Category": 0,
+        "IsAuto": false,
+        "Default": "MA=="
       }
     ],
     "Indexes": [
@@ -94,7 +100,7 @@
       0,
       1
     ],
-    "CacheType": 1
+    "Type": 0
   },
   {
     "Name": "b",
@@ -193,7 +199,7 @@
       0,
       1
     ],
-    "CacheType": 0
+    "Type": 0
   },
   {
     "Name": "c",
@@ -213,7 +219,7 @@
     ],
     "Indexes": [],
     "PKColumns": null,
-    "CacheType": 0
+    "Type": 0
   },
   {
     "Name": "d",
@@ -300,47 +306,14 @@
     "PKColumns": [
       0
     ],
-    "CacheType": 1
+    "Type": 0
   },
   {
-    "Name": "e",
-    "Columns": [
-      {
-        "Name": "eid",
-        "Category": 1,
-        "IsAuto": false,
-        "Default": 0
-      },
-      {
-        "Name": "id",
-        "Category": 1,
-        "IsAuto": false,
-        "Default": 0
-      }
-    ],
-    "Indexes": [
-      {
-        "Name": "PRIMARY",
-        "Columns": [
-          "eid",
-          "id"
-        ],
-        "Cardinality": [
-          1,
-          1
-        ],
-        "DataColumns": [
-          "eid",
-          "id"
-        ]
-      }
-    ],
-    "PKColumns": [
-      0,
-      1,
-      0,
-      1
-    ],
-    "CacheType": 2
+    "Name": "seq",
+    "Type": 1
+  },
+  {
+    "Name": "dual",
+    "Type": 0
   }
 ]

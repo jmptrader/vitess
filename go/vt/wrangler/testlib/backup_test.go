@@ -21,7 +21,7 @@ import (
 	"github.com/youtube/vitess/go/vt/topo/topoproto"
 	"github.com/youtube/vitess/go/vt/vttest/fakesqldb"
 	"github.com/youtube/vitess/go/vt/wrangler"
-	"github.com/youtube/vitess/go/vt/zktopo"
+	"github.com/youtube/vitess/go/vt/zktopo/zktestserver"
 	"golang.org/x/net/context"
 
 	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
@@ -31,10 +31,18 @@ func TestBackupRestore(t *testing.T) {
 	// Initialize our environment
 	ctx := context.Background()
 	db := fakesqldb.Register()
-	ts := zktopo.NewTestServer(t, []string{"cell1", "cell2"})
+	ts := zktestserver.New(t, []string{"cell1", "cell2"})
 	wr := wrangler.New(logutil.NewConsoleLogger(), ts, tmclient.NewTabletManagerClient())
 	vp := NewVtctlPipe(t, ts)
 	defer vp.Close()
+
+	// Set up mock query results.
+	db.AddQuery("CREATE DATABASE IF NOT EXISTS _vt", &sqltypes.Result{})
+	db.AddQuery("BEGIN", &sqltypes.Result{})
+	db.AddQuery("COMMIT", &sqltypes.Result{})
+	db.AddQueryPattern(`SET @@session\.sql_log_bin = .*`, &sqltypes.Result{})
+	db.AddQueryPattern(`CREATE TABLE IF NOT EXISTS _vt\.local_metadata .*`, &sqltypes.Result{})
+	db.AddQueryPattern(`INSERT INTO _vt\.local_metadata .*`, &sqltypes.Result{})
 
 	// Initialize our temp dirs
 	root, err := ioutil.TempDir("", "backuptest")
@@ -136,7 +144,7 @@ func TestBackupRestore(t *testing.T) {
 		RelayLogInfoPath:      path.Join(root, "relay-log.info"),
 	}
 	destTablet.FakeMysqlDaemon.FetchSuperQueryMap = map[string]*sqltypes.Result{
-		"SHOW DATABASES": &sqltypes.Result{},
+		"SHOW DATABASES": {},
 	}
 	destTablet.FakeMysqlDaemon.SetSlavePositionCommandsPos = sourceTablet.FakeMysqlDaemon.CurrentMasterPosition
 	destTablet.FakeMysqlDaemon.SetSlavePositionCommandsResult = []string{"cmd1"}
@@ -146,8 +154,8 @@ func TestBackupRestore(t *testing.T) {
 	destTablet.StartActionLoop(t, wr)
 	defer destTablet.StopActionLoop(t)
 
-	if err := destTablet.Agent.RestoreFromBackup(ctx); err != nil {
-		t.Fatalf("RestoreFromBackup failed: %v", err)
+	if err := destTablet.Agent.RestoreData(ctx, logutil.NewConsoleLogger(), false /* deleteBeforeRestore */); err != nil {
+		t.Fatalf("RestoreData failed: %v", err)
 	}
 
 	// verify the full status

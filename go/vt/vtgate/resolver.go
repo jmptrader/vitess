@@ -12,13 +12,13 @@ import (
 	"reflect"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/youtube/vitess/go/sqltypes"
 	"github.com/youtube/vitess/go/vt/discovery"
-	"github.com/youtube/vitess/go/vt/tabletserver/tabletconn"
+	"github.com/youtube/vitess/go/vt/sqlannotation"
 	"github.com/youtube/vitess/go/vt/topo"
 	"github.com/youtube/vitess/go/vt/vterrors"
+	"github.com/youtube/vitess/go/vt/vtgate/gateway"
 	"golang.org/x/net/context"
 
 	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
@@ -33,9 +33,6 @@ var (
 	closeBracket     = []byte(")")
 	kwAnd            = []byte(" and ")
 	kwWhere          = []byte(" where ")
-	insertDML        = "insert"
-	updateDML        = "update"
-	deleteDML        = "delete"
 )
 
 // Resolver is the layer to resolve KeyspaceIds and KeyRanges
@@ -44,37 +41,29 @@ var (
 // resharding happened.
 type Resolver struct {
 	scatterConn *ScatterConn
-	toposerv    SrvTopoServer
+	toposerv    topo.SrvTopoServer
 	cell        string
 }
 
 // NewResolver creates a new Resolver. All input parameters are passed through
 // for creating ScatterConn.
-func NewResolver(hc discovery.HealthCheck, topoServer topo.Server, serv SrvTopoServer, statsName, cell string, retryDelay time.Duration, retryCount int, connTimeoutTotal, connTimeoutPerConn, connLife time.Duration, testGateway string) *Resolver {
+func NewResolver(hc discovery.HealthCheck, topoServer topo.Server, serv topo.SrvTopoServer, statsName, cell string, retryCount int, tabletTypesToWait []topodatapb.TabletType) *Resolver {
 	return &Resolver{
-		scatterConn: NewScatterConn(hc, topoServer, serv, statsName, cell, retryDelay, retryCount, connTimeoutTotal, connTimeoutPerConn, connLife, testGateway),
+		scatterConn: NewScatterConn(hc, topoServer, serv, statsName, cell, retryCount, tabletTypesToWait),
 		toposerv:    serv,
 		cell:        cell,
 	}
 }
 
-// InitializeConnections pre-initializes VTGate by connecting to vttablets of all keyspace/shard/type.
-// It is not necessary to call this function before serving queries,
-// but it would reduce connection overhead when serving.
-func (res *Resolver) InitializeConnections(ctx context.Context) error {
-	return res.scatterConn.InitializeConnections(ctx)
-}
-
-// isConnError will be true if the error comes from the connection layer (ShardConn or
-// ScatterConn). The error code from the conn error is also returned.
-func isConnError(err error) (int, bool) {
+// isRetryableError will be true if the error should be retried.
+func isRetryableError(err error) bool {
 	switch e := err.(type) {
 	case *ScatterConnError:
-		return e.Code, true
-	case *ShardConnError:
-		return e.Code, true
+		return e.Retryable
+	case *gateway.ShardError:
+		return e.ErrorCode == vtrpcpb.ErrorCode_QUERY_NOT_SERVED
 	default:
-		return 0, false
+		return false
 	}
 }
 
@@ -83,7 +72,7 @@ func isConnError(err error) (int, bool) {
 // This throws an error if a dml spans multiple keyspace_ids. Resharding depends
 // on being able to uniquely route a write.
 func (res *Resolver) ExecuteKeyspaceIds(ctx context.Context, sql string, bindVariables map[string]interface{}, keyspace string, keyspaceIds [][]byte, tabletType topodatapb.TabletType, session *vtgatepb.Session, notInTransaction bool) (*sqltypes.Result, error) {
-	if isDml(sql) && len(keyspaceIds) > 1 {
+	if sqlannotation.IsDML(sql) && len(keyspaceIds) > 1 {
 		return nil, vterrors.FromError(
 			vtrpcpb.ErrorCode_BAD_INPUT,
 			fmt.Errorf("DML should not span multiple keyspace_ids"),
@@ -142,7 +131,7 @@ func (res *Resolver) Execute(
 			tabletType,
 			NewSafeSession(session),
 			notInTransaction)
-		if connErrorCode, ok := isConnError(err); ok && connErrorCode == tabletconn.ERR_RETRY {
+		if isRetryableError(err) {
 			resharding := false
 			newKeyspace, newShards, err := mapToShards(keyspace)
 			if err != nil {
@@ -205,7 +194,7 @@ func (res *Resolver) ExecuteEntityIds(
 			tabletType,
 			NewSafeSession(session),
 			notInTransaction)
-		if connErrorCode, ok := isConnError(err); ok && connErrorCode == tabletconn.ERR_RETRY {
+		if isRetryableError(err) {
 			resharding := false
 			newKeyspace, newShardIDMap, err := mapEntityIdsToShards(
 				ctx,
@@ -281,7 +270,7 @@ func (res *Resolver) ExecuteBatch(
 		}
 		// If lower level retries failed, check if there was a resharding event
 		// and retry again if needed.
-		if connErrorCode, ok := isConnError(err); ok && connErrorCode == tabletconn.ERR_RETRY {
+		if isRetryableError(err) {
 			newBatchRequest, buildErr := buildBatchRequest()
 			if buildErr != nil {
 				return nil, buildErr
@@ -373,6 +362,11 @@ func (res *Resolver) Rollback(ctx context.Context, inSession *vtgatepb.Session) 
 	return res.scatterConn.Rollback(ctx, NewSafeSession(inSession))
 }
 
+// GetGatewayCacheStatus returns a displayable version of the Gateway cache.
+func (res *Resolver) GetGatewayCacheStatus() gateway.TabletCacheStatusList {
+	return res.scatterConn.GetGatewayCacheStatus()
+}
+
 // StrsEquals compares contents of two string slices.
 func StrsEquals(a, b []string) bool {
 	if len(a) != len(b) {
@@ -448,16 +442,4 @@ func insertSQLClause(querySQL, clause string) string {
 		b.Write([]byte(querySQL[idxExtra:]))
 	}
 	return b.String()
-}
-
-func isDml(querySQL string) bool {
-	var sqlKW string
-	if i := strings.Index(querySQL, " "); i >= 0 {
-		sqlKW = querySQL[:i]
-	}
-	sqlKW = strings.ToLower(sqlKW)
-	if sqlKW == insertDML || sqlKW == updateDML || sqlKW == deleteDML {
-		return true
-	}
-	return false
 }

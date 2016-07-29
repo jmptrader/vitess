@@ -3,12 +3,11 @@ FROM debian:jessie
 
 # Install dependencies
 RUN apt-key adv --recv-keys --keyserver pgp.mit.edu 5072E1F5 \
- && echo 'deb http://repo.mysql.com/apt/debian/ jessie mysql-5.6' > /etc/apt/sources.list.d/mysql.list \
+ && echo 'deb http://repo.mysql.com/apt/debian/ jessie mysql-5.7' > /etc/apt/sources.list.d/mysql.list \
  && apt-get update \
  && DEBIAN_FRONTEND=noninteractive \
     apt-get install -y --no-install-recommends \
       bzip2 \
-      memcached \
       libmysqlclient18 \
       mysql-client \
       mysql-server \
@@ -24,7 +23,6 @@ ENV GOPATH $VTROOT
 ENV PATH $VTROOT/bin:$PATH
 ENV VT_MYSQL_ROOT /usr
 ENV PKG_CONFIG_PATH $VTROOT/lib
-ENV LD_LIBRARY_PATH $VTROOT/dist/vt-zookeeper-3.4.6/lib
 
 # Copy binaries (placed by build.sh)
 COPY lite/vt /vt

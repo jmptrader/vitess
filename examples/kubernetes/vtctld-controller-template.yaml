@@ -40,7 +40,7 @@ spec:
               mkdir -p $VTDATAROOT/tmp &&
               chown -R vitess /vt &&
               su -p -c "/vt/bin/vtctld
-              -debug
+              -cell {{cell}}
               -web_dir $VTTOP/web/vtctld
               -log_dir $VTDATAROOT/tmp
               -alsologtostderr
@@ -48,10 +48,8 @@ spec:
               -grpc_port 15999
               -service_map 'grpc-vtctl'
               -topo_implementation etcd
-              -tablet_protocol grpc
-              -tablet_manager_protocol grpc
               -etcd_global_addrs http://etcd-global:4001
-              {{backup_flags}}" vitess
+              {{backup_flags}} {{test_flags}}" vitess
       volumes:
         - name: syslog
           hostPath: {path: /dev/log}

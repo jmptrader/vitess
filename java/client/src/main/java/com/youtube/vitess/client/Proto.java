@@ -17,6 +17,7 @@ import com.youtube.vitess.proto.Vtgate.BoundShardQuery;
 import com.youtube.vitess.proto.Vtgate.ExecuteEntityIdsRequest.EntityId;
 import com.youtube.vitess.proto.Vtrpc.RPCError;
 
+import java.math.BigDecimal;
 import java.sql.SQLException;
 import java.sql.SQLIntegrityConstraintViolationException;
 import java.sql.SQLInvalidAuthorizationSpecException;
@@ -28,38 +29,106 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
+import javax.annotation.Nullable;
+
 /**
  * Proto contains methods for working with Vitess protobuf messages.
  */
 public class Proto {
+
+  private static int MAX_DECIMAL_UNIT = 30;
+
   /**
    * Throws the proper SQLException for an error returned by VTGate.
    *
-   * <p>Errors returned by Vitess are documented in the
+   * <p>
+   * Errors returned by Vitess are documented in the
    * <a href="https://github.com/youtube/vitess/blob/master/proto/vtrpc.proto">vtrpc proto</a>.
    */
   public static void checkError(RPCError error) throws SQLException {
     if (error != null) {
+      int errno = getErrno(error.getMessage());
+      String sqlState = getSQLState(error.getMessage());
+
       switch (error.getCode()) {
         case SUCCESS:
           break;
         case BAD_INPUT:
-          throw new SQLSyntaxErrorException(error.toString());
+          throw new SQLSyntaxErrorException(error.toString(), sqlState, errno);
         case DEADLINE_EXCEEDED:
-          throw new SQLTimeoutException(error.toString());
+          throw new SQLTimeoutException(error.toString(), sqlState, errno);
         case INTEGRITY_ERROR:
-          throw new SQLIntegrityConstraintViolationException(error.toString());
+          throw new SQLIntegrityConstraintViolationException(error.toString(), sqlState, errno);
         case TRANSIENT_ERROR:
-          throw new SQLTransientException(error.toString());
+          throw new SQLTransientException(error.toString(), sqlState, errno);
         case UNAUTHENTICATED:
-          throw new SQLInvalidAuthorizationSpecException(error.toString());
+          throw new SQLInvalidAuthorizationSpecException(error.toString(), sqlState, errno);
         default:
-          throw new SQLNonTransientException("Vitess RPC error: " + error.toString());
+          throw new SQLNonTransientException("Vitess RPC error: " + error.toString(), sqlState,
+              errno);
       }
     }
   }
 
+  /**
+   * Extracts the MySQL errno from a Vitess error message, if any.
+   *
+   * <p>
+   * If no errno information is found, it returns {@code 0}.
+   */
+  public static int getErrno(@Nullable String errorMessage) {
+    if (errorMessage == null) {
+      return 0;
+    }
+    int tagPos = errorMessage.indexOf("(errno ");
+    if (tagPos == -1) {
+      return 0;
+    }
+    int start = tagPos + "(errno ".length();
+    if (start >= errorMessage.length()) {
+      return 0;
+    }
+    int end = errorMessage.indexOf(')', start);
+    if (end == -1) {
+      return 0;
+    }
+    try {
+      return Integer.parseInt(errorMessage.substring(start, end));
+    } catch (NumberFormatException e) {
+      return 0;
+    }
+  }
+
+  /**
+   * Extracts the SQLSTATE from a Vitess error message, if any.
+   *
+   * <p>
+   * If no SQLSTATE information is found, it returns {@code ""}.
+   */
+  public static String getSQLState(@Nullable String errorMessage) {
+    if (errorMessage == null) {
+      return "";
+    }
+    int tagPos = errorMessage.indexOf("(sqlstate ");
+    if (tagPos == -1) {
+      return "";
+    }
+    int start = tagPos + "(sqlstate ".length();
+    if (start >= errorMessage.length()) {
+      return "";
+    }
+    int end = errorMessage.indexOf(')', start);
+    if (end == -1) {
+      return "";
+    }
+    return errorMessage.substring(start, end);
+  }
+
   public static BindVariable buildBindVariable(Object value) {
+    if (value instanceof BindVariable) {
+      return (BindVariable) value;
+    }
+
     BindVariable.Builder builder = BindVariable.newBuilder();
 
     if (value instanceof Iterable<?>) {
@@ -88,11 +157,8 @@ public class Proto {
   public static EntityId buildEntityId(byte[] keyspaceId, Object value) {
     TypedValue tval = new TypedValue(value);
 
-    return EntityId.newBuilder()
-        .setKeyspaceId(ByteString.copyFrom(keyspaceId))
-        .setXidType(tval.type)
-        .setXidValue(tval.value)
-        .build();
+    return EntityId.newBuilder().setKeyspaceId(ByteString.copyFrom(keyspaceId)).setType(tval.type)
+        .setValue(tval.value).build();
   }
 
   /**
@@ -112,40 +178,35 @@ public class Proto {
   /**
    * bindShardQuery creates a BoundShardQuery.
    */
-  public static BoundShardQuery bindShardQuery(
-      String keyspace, Iterable<String> shards, BoundQuery query) {
-    return BoundShardQuery.newBuilder()
-        .setKeyspace(keyspace)
-        .addAllShards(shards)
-        .setQuery(query)
+  public static BoundShardQuery bindShardQuery(String keyspace, Iterable<String> shards,
+      BoundQuery query) {
+    return BoundShardQuery.newBuilder().setKeyspace(keyspace).addAllShards(shards).setQuery(query)
         .build();
   }
 
   /**
    * bindShardQuery creates a BoundShardQuery.
    */
-  public static BoundShardQuery bindShardQuery(
-      String keyspace, Iterable<String> shards, String query, Map<String, ?> vars) {
+  public static BoundShardQuery bindShardQuery(String keyspace, Iterable<String> shards,
+      String query, Map<String, ?> vars) {
     return bindShardQuery(keyspace, shards, bindQuery(query, vars));
   }
 
   /**
    * bindKeyspaceIdQuery creates a BoundKeyspaceIdQuery.
    */
-  public static BoundKeyspaceIdQuery bindKeyspaceIdQuery(
-      String keyspace, Iterable<byte[]> keyspaceIds, BoundQuery query) {
-    return BoundKeyspaceIdQuery.newBuilder()
-        .setKeyspace(keyspace)
+  public static BoundKeyspaceIdQuery bindKeyspaceIdQuery(String keyspace,
+      Iterable<byte[]> keyspaceIds, BoundQuery query) {
+    return BoundKeyspaceIdQuery.newBuilder().setKeyspace(keyspace)
         .addAllKeyspaceIds(Iterables.transform(keyspaceIds, BYTE_ARRAY_TO_BYTE_STRING))
-        .setQuery(query)
-        .build();
+        .setQuery(query).build();
   }
 
   /**
    * bindKeyspaceIdQuery creates a BoundKeyspaceIdQuery.
    */
-  public static BoundKeyspaceIdQuery bindKeyspaceIdQuery(
-      String keyspace, Iterable<byte[]> keyspaceIds, String query, Map<String, ?> vars) {
+  public static BoundKeyspaceIdQuery bindKeyspaceIdQuery(String keyspace,
+      Iterable<byte[]> keyspaceIds, String query, Map<String, ?> vars) {
     return bindKeyspaceIdQuery(keyspace, keyspaceIds, bindQuery(query, vars));
   }
 
@@ -183,6 +244,7 @@ public class Proto {
     TypedValue(Object value) {
       if (value == null) {
         this.type = Query.Type.NULL_TYPE;
+        this.value = ByteString.EMPTY;
       } else if (value instanceof String) {
         // String
         this.type = Query.Type.VARCHAR;
@@ -191,8 +253,9 @@ public class Proto {
         // Bytes
         this.type = Query.Type.VARBINARY;
         this.value = ByteString.copyFrom((byte[]) value);
-      } else if (value instanceof Integer || value instanceof Long) {
-        // Int32, Int64
+      } else if (value instanceof Integer || value instanceof Long || value instanceof Short
+          || value instanceof Byte) {
+        // Int32, Int64, Short, Byte
         this.type = Query.Type.INT64;
         this.value = ByteString.copyFromUtf8(value.toString());
       } else if (value instanceof UnsignedLong) {
@@ -203,6 +266,19 @@ public class Proto {
         // Float, Double
         this.type = Query.Type.FLOAT64;
         this.value = ByteString.copyFromUtf8(value.toString());
+      } else if (value instanceof Boolean) {
+        // Boolean
+        this.type = Query.Type.INT64;
+        this.value = ByteString.copyFromUtf8(((boolean) value) ? "1" : "0");
+      } else if (value instanceof BigDecimal) {
+        // BigDecimal
+        BigDecimal bigDecimal = (BigDecimal) value;
+        if (bigDecimal.scale() > MAX_DECIMAL_UNIT) {
+          // MySQL only supports scale up to 30.
+          bigDecimal = bigDecimal.setScale(MAX_DECIMAL_UNIT, BigDecimal.ROUND_HALF_UP);
+        }
+        this.type = Query.Type.DECIMAL;
+        this.value = ByteString.copyFromUtf8(bigDecimal.toPlainString());
       } else {
         throw new IllegalArgumentException(
             "unsupported type for Query.Value proto: " + value.getClass());

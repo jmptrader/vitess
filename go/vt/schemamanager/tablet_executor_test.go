@@ -6,11 +6,18 @@ package schemamanager
 
 import (
 	"testing"
+	"time"
 
 	"golang.org/x/net/context"
 
+	"github.com/youtube/vitess/go/vt/logutil"
 	"github.com/youtube/vitess/go/vt/mysqlctl/tmutils"
 	tabletmanagerdatapb "github.com/youtube/vitess/go/vt/proto/tabletmanagerdata"
+	"github.com/youtube/vitess/go/vt/wrangler"
+)
+
+var (
+	testWaitSlaveTimeout = 10 * time.Second
 )
 
 func TestTabletExecutorOpen(t *testing.T) {
@@ -31,9 +38,8 @@ func TestTabletExecutorOpen(t *testing.T) {
 func TestTabletExecutorOpenWithEmptyMasterAlias(t *testing.T) {
 	ft := newFakeTopo()
 	ft.Impl.(*fakeTopo).WithEmptyMasterAlias = true
-	executor := NewTabletExecutor(
-		newFakeTabletManagerClient(),
-		ft)
+	wr := wrangler.New(logutil.NewConsoleLogger(), ft, newFakeTabletManagerClient())
+	executor := NewTabletExecutor(wr, testWaitSlaveTimeout)
 	ctx := context.Background()
 
 	if err := executor.Open(ctx, "test_keyspace"); err == nil {
@@ -68,9 +74,8 @@ func TestTabletExecutorValidate(t *testing.T) {
 		},
 	})
 
-	executor := NewTabletExecutor(
-		fakeTmc,
-		newFakeTopo())
+	wr := wrangler.New(logutil.NewConsoleLogger(), newFakeTopo(), fakeTmc)
+	executor := NewTabletExecutor(wr, testWaitSlaveTimeout)
 	ctx := context.Background()
 
 	sqls := []string{
@@ -115,6 +120,21 @@ func TestTabletExecutorValidate(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("executor.Validate should succeed, drop a table with more than 2,000,000 rows is allowed")
 	}
+
+	executor.AllowBigSchemaChange()
+	// alter a table with more than 100,000 rows
+	if err := executor.Validate(ctx, []string{
+		"ALTER TABLE test_table_03 ADD COLUMN new_id bigint(20)",
+	}); err != nil {
+		t.Fatalf("executor.Validate should succeed, big schema change is disabled")
+	}
+
+	executor.DisallowBigSchemaChange()
+	if err := executor.Validate(ctx, []string{
+		"ALTER TABLE test_table_03 ADD COLUMN new_id bigint(20)",
+	}); err == nil {
+		t.Fatalf("executor.Validate should fail, alter a table more than 100,000 rows")
+	}
 }
 
 func TestTabletExecutorExecute(t *testing.T) {
@@ -127,11 +147,16 @@ func TestTabletExecutorExecute(t *testing.T) {
 	if result.ExecutorErr == "" {
 		t.Fatalf("execute should fail, call execute.Open first")
 	}
+}
 
+func TestTabletExecutorExecute_PreflightWithoutChangesIsAnError(t *testing.T) {
+	executor := newFakeExecutor()
+	ctx := context.Background()
 	executor.Open(ctx, "test_keyspace")
 	defer executor.Close()
 
-	result = executor.Execute(ctx, sqls)
+	sqls := []string{"DROP TABLE unknown_table"}
+	result := executor.Execute(ctx, sqls)
 	if result.ExecutorErr == "" {
 		t.Fatalf("execute should fail, ddl does not introduce any table schema change")
 	}

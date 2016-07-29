@@ -8,7 +8,6 @@ import (
 	"fmt"
 
 	"github.com/youtube/vitess/go/vt/key"
-	"github.com/youtube/vitess/go/vt/tabletmanager/actionnode"
 	"github.com/youtube/vitess/go/vt/topo"
 	"github.com/youtube/vitess/go/vt/topo/topoproto"
 	"github.com/youtube/vitess/go/vt/topotools"
@@ -40,7 +39,7 @@ func (wr *Wrangler) InitTablet(ctx context.Context, tablet *topodatapb.Tablet, a
 
 	if createShardAndKeyspace {
 		// create the parent keyspace and shard if needed
-		si, err = topotools.GetOrCreateShard(ctx, wr.ts, tablet.Keyspace, tablet.Shard)
+		si, err = wr.ts.GetOrCreateShard(ctx, tablet.Keyspace, tablet.Shard)
 	} else {
 		si, err = wr.ts.GetShard(ctx, tablet.Keyspace, tablet.Shard)
 		if err == topo.ErrNoNode {
@@ -94,14 +93,12 @@ func (wr *Wrangler) InitTablet(ctx context.Context, tablet *topodatapb.Tablet, a
 // DeleteTablet removes a tablet from a shard.
 // - if allowMaster is set, we can Delete a master tablet (and clear
 // its record from the Shard record if it was the master).
-// - if skipRebuild is set, we do not rebuild the serving graph.
-func (wr *Wrangler) DeleteTablet(ctx context.Context, tabletAlias *topodatapb.TabletAlias, allowMaster, skipRebuild bool) error {
+func (wr *Wrangler) DeleteTablet(ctx context.Context, tabletAlias *topodatapb.TabletAlias, allowMaster bool) (err error) {
 	// load the tablet, see if we'll need to rebuild
 	ti, err := wr.ts.GetTablet(ctx, tabletAlias)
 	if err != nil {
 		return err
 	}
-	rebuildRequired := ti.IsInServingGraph()
 	wasMaster := ti.Type == topodatapb.TabletType_MASTER
 	if wasMaster && !allowMaster {
 		return fmt.Errorf("cannot delete tablet %v as it is a master, use allow_master flag", topoproto.TabletAliasString(tabletAlias))
@@ -113,43 +110,27 @@ func (wr *Wrangler) DeleteTablet(ctx context.Context, tabletAlias *topodatapb.Ta
 	}
 
 	// update the Shard object if the master was scrapped.
-	// we lock the shard to not conflict with reparent operations.
 	if wasMaster {
-		actionNode := actionnode.UpdateShard()
-		lockPath, err := wr.lockShard(ctx, ti.Keyspace, ti.Shard, actionNode)
-		if err != nil {
-			return err
+		// We lock the shard to not conflict with reparent operations.
+		ctx, unlock, lockErr := wr.ts.LockShard(ctx, ti.Keyspace, ti.Shard, fmt.Sprintf("DeleteTablet(%v)", topoproto.TabletAliasString(tabletAlias)))
+		if lockErr != nil {
+			return lockErr
 		}
+		defer unlock(&err)
 
 		// update the shard record's master
-		if _, err := wr.ts.UpdateShardFields(ctx, ti.Keyspace, ti.Shard, func(s *topodatapb.Shard) error {
-			if !topoproto.TabletAliasEqual(s.MasterAlias, tabletAlias) {
-				wr.Logger().Warningf("Deleting master %v from shard %v/%v but master in Shard object was %v", topoproto.TabletAliasString(tabletAlias), ti.Keyspace, ti.Shard, topoproto.TabletAliasString(s.MasterAlias))
+		_, err = wr.ts.UpdateShardFields(ctx, ti.Keyspace, ti.Shard, func(si *topo.ShardInfo) error {
+			if !topoproto.TabletAliasEqual(si.MasterAlias, tabletAlias) {
+				wr.Logger().Warningf("Deleting master %v from shard %v/%v but master in Shard object was %v", topoproto.TabletAliasString(tabletAlias), ti.Keyspace, ti.Shard, topoproto.TabletAliasString(si.MasterAlias))
 				return topo.ErrNoUpdateNeeded
 			}
-			s.MasterAlias = nil
+			si.MasterAlias = nil
 			return nil
-		}); err != nil {
-			return wr.unlockShard(ctx, ti.Keyspace, ti.Shard, actionNode, lockPath, err)
-		}
-
-		// and unlock
-		if err := wr.unlockShard(ctx, ti.Keyspace, ti.Shard, actionNode, lockPath, err); err != nil {
-			return err
-		}
+		})
+		return err
 	}
 
-	// and rebuild the original shard if needed
-	if !rebuildRequired {
-		wr.Logger().Infof("Rebuild not required")
-		return nil
-	}
-	if skipRebuild {
-		wr.Logger().Warningf("Rebuild required, but skipping it")
-		return nil
-	}
-	_, err = wr.RebuildShardGraph(ctx, ti.Keyspace, ti.Shard, []string{ti.Alias.Cell})
-	return err
+	return nil
 }
 
 // ChangeSlaveType changes the type of tablet and recomputes all
@@ -164,50 +145,19 @@ func (wr *Wrangler) ChangeSlaveType(ctx context.Context, tabletAlias *topodatapb
 		return err
 	}
 
-	// ask the tablet to make the change
-	if err := wr.tmc.ChangeType(ctx, ti, tabletType); err != nil {
-		return err
+	if !topo.IsTrivialTypeChange(ti.Type, tabletType) {
+		return fmt.Errorf("tablet %v type change %v -> %v is not an allowed transition for ChangeSlaveType", tabletAlias, ti.Type, tabletType)
 	}
 
-	// if the tablet was or is serving, rebuild the serving graph
-	if ti.IsInServingGraph() || topo.IsInServingGraph(tabletType) {
-		if _, err := wr.RebuildShardGraph(ctx, ti.Tablet.Keyspace, ti.Tablet.Shard, []string{ti.Tablet.Alias.Cell}); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// same as ChangeType, but assume we already have the shard lock,
-// and do not have the option to force anything.
-func (wr *Wrangler) changeTypeInternal(ctx context.Context, tabletAlias *topodatapb.TabletAlias, dbType topodatapb.TabletType) error {
-	ti, err := wr.ts.GetTablet(ctx, tabletAlias)
-	if err != nil {
-		return err
-	}
-	rebuildRequired := ti.IsInServingGraph()
-
-	// change the type
-	if err := wr.tmc.ChangeType(ctx, ti, dbType); err != nil {
-		return err
-	}
-
-	// rebuild if necessary
-	if rebuildRequired {
-		_, err = wr.RebuildShardGraph(ctx, ti.Keyspace, ti.Shard, []string{ti.Alias.Cell})
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	// and ask the tablet to make the change
+	return wr.tmc.ChangeType(ctx, ti.Tablet, tabletType)
 }
 
 // ExecuteFetchAsDba executes a query remotely using the DBA pool
-func (wr *Wrangler) ExecuteFetchAsDba(ctx context.Context, tabletAlias *topodatapb.TabletAlias, query string, maxRows int, wantFields, disableBinlogs bool, reloadSchema bool) (*querypb.QueryResult, error) {
+func (wr *Wrangler) ExecuteFetchAsDba(ctx context.Context, tabletAlias *topodatapb.TabletAlias, query string, maxRows int, disableBinlogs bool, reloadSchema bool) (*querypb.QueryResult, error) {
 	ti, err := wr.ts.GetTablet(ctx, tabletAlias)
 	if err != nil {
 		return nil, err
 	}
-	return wr.tmc.ExecuteFetchAsDba(ctx, ti, query, maxRows, wantFields, disableBinlogs, reloadSchema)
+	return wr.tmc.ExecuteFetchAsDba(ctx, ti.Tablet, []byte(query), maxRows, disableBinlogs, reloadSchema)
 }

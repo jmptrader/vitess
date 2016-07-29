@@ -6,12 +6,18 @@ set -e
 
 cell='test'
 keyspace='test_keyspace'
-shard=0
-uid_base=100
-tablet_type='replica'
-port_base=15100
-grpc_port_base=16100
-mysql_port_base=33100
+shard=${SHARD:-'0'}
+uid_base=${UID_BASE:-'100'}
+port_base=$[15000 + $uid_base]
+grpc_port_base=$[16000 + $uid_base]
+mysql_port_base=$[17000 + $uid_base]
+tablet_hostname=''
+
+# Travis hostnames are too long for MySQL, so we use IP.
+# Otherwise, blank hostname means the tablet auto-detects FQDN.
+if [ "$TRAVIS" == true ]; then
+  tablet_hostname=`hostname -i`
+fi
 
 script_root=`dirname "${BASH_SOURCE}"`
 source $script_root/env.sh
@@ -45,21 +51,13 @@ esac
 
 mkdir -p $VTDATAROOT/backups
 
-# Look for memcached.
-memcached_path=`which memcached`
-if [ -z "$memcached_path" ]; then
-  echo "Can't find memcached. Please make sure it is available in PATH."
-  exit 1
-fi
-
-# Start 3 vttablets by default.
+# Start 5 vttablets by default.
 # Pass a list of UID indices on the command line to override.
-uids=${@:-'0 1 2'}
+uids=${@:-'0 1 2 3 4'}
 
+# Start all mysqlds in background.
 for uid_index in $uids; do
   uid=$[$uid_base + $uid_index]
-  port=$[$port_base + $uid_index]
-  grpc_port=$[$grpc_port_base + $uid_index]
   mysql_port=$[$mysql_port_base + $uid_index]
   printf -v alias '%s-%010d' $cell $uid
   printf -v tablet_dir 'vt_%010d' $uid
@@ -75,26 +73,40 @@ for uid_index in $uids; do
     -log_dir $VTDATAROOT/tmp \
     -tablet_uid $uid $dbconfig_flags \
     -mysql_port $mysql_port \
-    $action
+    $action &
+done
+
+# Wait for all mysqld to start up.
+wait
+
+# Start all vttablets in background.
+for uid_index in $uids; do
+  uid=$[$uid_base + $uid_index]
+  port=$[$port_base + $uid_index]
+  grpc_port=$[$grpc_port_base + $uid_index]
+  printf -v alias '%s-%010d' $cell $uid
+  printf -v tablet_dir 'vt_%010d' $uid
+  tablet_type=replica
+  if [[ $uid_index -gt 2 ]]; then
+    tablet_type=rdonly
+  fi
 
   echo "Starting vttablet for $alias..."
   $VTROOT/bin/vttablet \
     -log_dir $VTDATAROOT/tmp \
     -tablet-path $alias \
-    -tablet_hostname `hostname -i` \
+    -tablet_hostname "$tablet_hostname" \
     -init_keyspace $keyspace \
     -init_shard $shard \
-    -target_tablet_type $tablet_type \
+    -init_tablet_type $tablet_type \
     -health_check_interval 5s \
-    -enable-rowcache \
-    -rowcache-bin $memcached_path \
-    -rowcache-socket $VTDATAROOT/$tablet_dir/memcache.sock \
+    -enable_semi_sync \
+    -enable_replication_reporter \
     -backup_storage_implementation file \
     -file_backup_storage_root $VTDATAROOT/backups \
     -restore_from_backup \
     -port $port \
     -grpc_port $grpc_port \
-    -binlog_player_protocol grpc \
     -service_map 'grpc-queryservice,grpc-tabletmanager,grpc-updatestream' \
     -pid_file $VTDATAROOT/$tablet_dir/vttablet.pid \
     $dbconfig_flags \

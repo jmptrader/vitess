@@ -146,7 +146,7 @@ func TestMysql56VersionMatch(t *testing.T) {
 func TestMysql56ResetReplicationCommands(t *testing.T) {
 	want := []string{
 		"STOP SLAVE",
-		"RESET SLAVE",
+		"RESET SLAVE ALL",
 		"RESET MASTER",
 	}
 	if got := (&mysql56{}).ResetReplicationCommands(); !reflect.DeepEqual(got, want) {
@@ -155,7 +155,7 @@ func TestMysql56ResetReplicationCommands(t *testing.T) {
 }
 
 func TestMysql56PromoteSlaveCommands(t *testing.T) {
-	want := []string{"RESET SLAVE"}
+	want := []string{"RESET SLAVE ALL"}
 	if got := (&mysql56{}).PromoteSlaveCommands(); !reflect.DeepEqual(got, want) {
 		t.Errorf("(&mysql56{}).PromoteSlaveCommands() = %#v, want %#v", got, want)
 	}

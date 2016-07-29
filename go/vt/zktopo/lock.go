@@ -11,10 +11,11 @@ import (
 	"time"
 
 	log "github.com/golang/glog"
+	zookeeper "github.com/samuel/go-zookeeper/zk"
+
 	"github.com/youtube/vitess/go/vt/topo"
 	"github.com/youtube/vitess/go/zk"
 	"golang.org/x/net/context"
-	"launchpad.net/gozk/zookeeper"
 )
 
 /*
@@ -25,9 +26,9 @@ This file contains the lock management code for zktopo.Server
 // queue lock, displays a nice error message if it cant get it
 func (zkts *Server) lockForAction(ctx context.Context, actionDir, contents string) (string, error) {
 	// create the action path
-	actionPath, err := zkts.zconn.Create(actionDir, contents, zookeeper.SEQUENCE|zookeeper.EPHEMERAL, zookeeper.WorldACL(zk.PERM_FILE))
+	actionPath, err := zkts.zconn.Create(actionDir, contents, zookeeper.FlagSequence|zookeeper.FlagEphemeral, zookeeper.WorldACL(zk.PermFile))
 	if err != nil {
-		return "", err
+		return "", convertError(err)
 	}
 
 	// get the timeout from the context
@@ -97,9 +98,9 @@ func (zkts *Server) lockForAction(ctx context.Context, actionDir, contents strin
 func (zkts *Server) unlockForAction(lockPath, results string) error {
 	// Write the data to the actionlog
 	actionLogPath := strings.Replace(lockPath, "/action/", "/actionlog/", 1)
-	if _, err := zk.CreateRecursive(zkts.zconn, actionLogPath, results, 0, zookeeper.WorldACL(zookeeper.PERM_ALL)); err != nil {
+	if _, err := zk.CreateRecursive(zkts.zconn, actionLogPath, results, 0, zookeeper.WorldACL(zookeeper.PermAll)); err != nil {
 		log.Warningf("Cannot create actionlog path %v (check the permissions with 'zk stat'), will keep the lock, use 'zk rm' to clear the lock", actionLogPath)
-		return err
+		return convertError(err)
 	}
 
 	// and delete the action
@@ -110,7 +111,7 @@ func (zkts *Server) unlockForAction(lockPath, results string) error {
 func (zkts *Server) LockKeyspaceForAction(ctx context.Context, keyspace, contents string) (string, error) {
 	// Action paths end in a trailing slash to that when we create
 	// sequential nodes, they are created as children, not siblings.
-	actionDir := path.Join(globalKeyspacesPath, keyspace, "action") + "/"
+	actionDir := path.Join(GlobalKeyspacesPath, keyspace, "action") + "/"
 	return zkts.lockForAction(ctx, actionDir, contents)
 }
 
@@ -123,35 +124,11 @@ func (zkts *Server) UnlockKeyspaceForAction(ctx context.Context, keyspace, lockP
 func (zkts *Server) LockShardForAction(ctx context.Context, keyspace, shard, contents string) (string, error) {
 	// Action paths end in a trailing slash to that when we create
 	// sequential nodes, they are created as children, not siblings.
-	actionDir := path.Join(globalKeyspacesPath, keyspace, "shards", shard, "action") + "/"
+	actionDir := path.Join(GlobalKeyspacesPath, keyspace, "shards", shard, "action") + "/"
 	return zkts.lockForAction(ctx, actionDir, contents)
 }
 
 // UnlockShardForAction is part of topo.Server interface
 func (zkts *Server) UnlockShardForAction(ctx context.Context, keyspace, shard, lockPath, results string) error {
-	return zkts.unlockForAction(lockPath, results)
-}
-
-// LockSrvShardForAction is part of topo.Server interface
-func (zkts *Server) LockSrvShardForAction(ctx context.Context, cell, keyspace, shard, contents string) (string, error) {
-	// Action paths end in a trailing slash to that when we create
-	// sequential nodes, they are created as children, not siblings.
-	actionDir := path.Join(zkPathForVtShard(cell, keyspace, shard), "action")
-
-	// if we can't create the lock file because the directory doesn't exist,
-	// create it
-	p, err := zkts.lockForAction(ctx, actionDir+"/", contents)
-	if err != nil && zookeeper.IsError(err, zookeeper.ZNONODE) {
-		_, err = zk.CreateRecursive(zkts.zconn, actionDir, "", 0, zookeeper.WorldACL(zookeeper.PERM_ALL))
-		if err != nil && !zookeeper.IsError(err, zookeeper.ZNODEEXISTS) {
-			return "", err
-		}
-		p, err = zkts.lockForAction(ctx, actionDir+"/", contents)
-	}
-	return p, err
-}
-
-// UnlockSrvShardForAction is part of topo.Server interface
-func (zkts *Server) UnlockSrvShardForAction(ctx context.Context, cell, keyspace, shard, lockPath, results string) error {
 	return zkts.unlockForAction(lockPath, results)
 }

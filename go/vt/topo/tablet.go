@@ -6,7 +6,6 @@ package topo
 
 import (
 	"fmt"
-	"reflect"
 	"sync"
 
 	"golang.org/x/net/context"
@@ -19,22 +18,6 @@ import (
 	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
 	"github.com/youtube/vitess/go/vt/topo/events"
 	"github.com/youtube/vitess/go/vt/topo/topoproto"
-)
-
-const (
-	// According to docs, the tablet uid / (mysql server id) is uint32.
-	// However, zero appears to be a sufficiently degenerate value to use
-	// as a marker for not having a parent server id.
-	// http://dev.mysql.com/doc/refman/5.1/en/replication-options.html
-	NO_TABLET = 0
-
-	// ReplicationLag is the key in the health map to indicate high
-	// replication lag
-	ReplicationLag = "replication_lag"
-
-	// ReplicationLagHigh is the value in the health map to indicate high
-	// replication lag
-	ReplicationLagHigh = "high"
 )
 
 // IsTrivialTypeChange returns if this db type be trivially reassigned
@@ -67,7 +50,30 @@ func IsInServingGraph(tt topodatapb.TabletType) bool {
 // IsRunningQueryService returns if a tablet is running the query service
 func IsRunningQueryService(tt topodatapb.TabletType) bool {
 	switch tt {
-	case topodatapb.TabletType_MASTER, topodatapb.TabletType_REPLICA, topodatapb.TabletType_RDONLY, topodatapb.TabletType_WORKER:
+	case topodatapb.TabletType_MASTER, topodatapb.TabletType_REPLICA, topodatapb.TabletType_RDONLY, topodatapb.TabletType_EXPERIMENTAL, topodatapb.TabletType_WORKER:
+		return true
+	}
+	return false
+}
+
+// IsSubjectToLameduck returns if a tablet is subject to being
+// lameduck.  Lameduck is a transition period where we are still
+// allowed to serve, but we tell the clients we are going away
+// soon. Typically, a vttablet will still serve, but broadcast a
+// non-serving state through its health check. then vtgate will ctahc
+// that non-serving state, and stop sending queries.
+//
+// Masters are not subject to lameduck, as we usually want to transition
+// them as fast as possible.
+//
+// Replica and rdonly will use lameduck when going from healthy to
+// unhealhty (either because health check fails, or they're shutting down).
+//
+// Other types are probably not serving user visible traffic, so they
+// need to transition as fast as possible too.
+func IsSubjectToLameduck(tt topodatapb.TabletType) bool {
+	switch tt {
+	case topodatapb.TabletType_REPLICA, topodatapb.TabletType_RDONLY:
 		return true
 	}
 	return false
@@ -95,37 +101,6 @@ func IsSlaveType(tt topodatapb.TabletType) bool {
 	return true
 }
 
-// TabletValidatePortMap returns an error if the tablet's portmap doesn't
-// contain all the necessary ports for the tablet to be fully
-// operational. We only care about vt port now, as mysql may not even
-// be running.
-func TabletValidatePortMap(tablet *topodatapb.Tablet) error {
-	if _, ok := tablet.PortMap["vt"]; !ok {
-		return fmt.Errorf("no vt port available")
-	}
-	return nil
-}
-
-// TabletEndPoint returns an EndPoint associated with the tablet record
-func TabletEndPoint(tablet *topodatapb.Tablet) (*topodatapb.EndPoint, error) {
-	if err := TabletValidatePortMap(tablet); err != nil {
-		return nil, err
-	}
-
-	entry := NewEndPoint(tablet.Alias.Uid, tablet.Hostname)
-	for name, port := range tablet.PortMap {
-		entry.PortMap[name] = int32(port)
-	}
-
-	if len(tablet.HealthMap) > 0 {
-		entry.HealthMap = make(map[string]string, len(tablet.HealthMap))
-		for k, v := range tablet.HealthMap {
-			entry.HealthMap[k] = v
-		}
-	}
-	return entry, nil
-}
-
 // TabletComplete validates and normalizes the tablet. If the shard name
 // contains a '-' it is going to try to infer the keyrange from it.
 func TabletComplete(tablet *topodatapb.Tablet) error {
@@ -136,6 +111,42 @@ func TabletComplete(tablet *topodatapb.Tablet) error {
 	tablet.Shard = shard
 	tablet.KeyRange = kr
 	return nil
+}
+
+// NewTablet create a new Tablet record with the given id, cell, and hostname.
+func NewTablet(uid uint32, cell, host string) *topodatapb.Tablet {
+	return &topodatapb.Tablet{
+		Alias: &topodatapb.TabletAlias{
+			Cell: cell,
+			Uid:  uid,
+		},
+		Hostname: host,
+		PortMap:  make(map[string]int32),
+	}
+}
+
+// TabletEquality returns true iff two Tablet are representing the same tablet
+// process: same uid/cell, running on the same host / ports.
+func TabletEquality(left, right *topodatapb.Tablet) bool {
+	if !topoproto.TabletAliasEqual(left.Alias, right.Alias) {
+		return false
+	}
+	if left.Hostname != right.Hostname {
+		return false
+	}
+	if len(left.PortMap) != len(right.PortMap) {
+		return false
+	}
+	for key, lvalue := range left.PortMap {
+		rvalue, ok := right.PortMap[key]
+		if !ok {
+			return false
+		}
+		if lvalue != rvalue {
+			return false
+		}
+	}
+	return true
 }
 
 // TabletInfo is the container for a Tablet, read from the topology server.
@@ -184,16 +195,6 @@ func (ti *TabletInfo) IsInServingGraph() bool {
 // IsSlaveType returns if this tablet's type is a slave
 func (ti *TabletInfo) IsSlaveType() bool {
 	return IsSlaveType(ti.Type)
-}
-
-// IsHealthEqual compares the two health maps, and
-// returns true if they're equivalent.
-func IsHealthEqual(left, right map[string]string) bool {
-	if len(left) == 0 && len(right) == 0 {
-		return true
-	}
-
-	return reflect.DeepEqual(left, right)
 }
 
 // NewTabletInfo returns a TabletInfo basing on tablet with the
@@ -247,25 +248,33 @@ func (ts Server) UpdateTablet(ctx context.Context, tablet *TabletInfo) error {
 	return nil
 }
 
-// UpdateTabletFields is a high level wrapper for TopoServer.UpdateTabletFields
-// that generates trace spans.
-func (ts Server) UpdateTabletFields(ctx context.Context, alias *topodatapb.TabletAlias, update func(*topodatapb.Tablet) error) error {
+// UpdateTabletFields is a high level helper to read a tablet record, call an
+// update function on it, and then write it back. If the write fails due to
+// a version mismatch, it will re-read the record and retry the update.
+// If the update succeeds, it returns the updated tablet.
+// If the update method returns ErrNoUpdateNeeded, nothing is written,
+// and nil,nil is returned.
+func (ts Server) UpdateTabletFields(ctx context.Context, alias *topodatapb.TabletAlias, update func(*topodatapb.Tablet) error) (*topodatapb.Tablet, error) {
 	span := trace.NewSpanFromContext(ctx)
 	span.StartClient("TopoServer.UpdateTabletFields")
 	span.Annotate("tablet", topoproto.TabletAliasString(alias))
 	defer span.Finish()
 
-	tablet, err := ts.Impl.UpdateTabletFields(ctx, alias, update)
-	if err != nil {
-		return err
+	for {
+		ti, err := ts.GetTablet(ctx, alias)
+		if err != nil {
+			return nil, err
+		}
+		if err = update(ti.Tablet); err != nil {
+			if err == ErrNoUpdateNeeded {
+				return nil, nil
+			}
+			return nil, err
+		}
+		if err = ts.UpdateTablet(ctx, ti); err != ErrBadVersion {
+			return ti.Tablet, err
+		}
 	}
-	if tablet != nil {
-		event.Dispatch(&events.TabletChange{
-			Tablet: *tablet,
-			Status: "updated",
-		})
-	}
-	return nil
 }
 
 // Validate makes sure a tablet is represented correctly in the topology server.

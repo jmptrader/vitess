@@ -15,7 +15,7 @@
 
 # select for update
 "select * from a for update"
-"select with lock disallowed with streaming"
+"select with lock not allowed for streaming"
 
 # union
 "select * from a union select * from b"

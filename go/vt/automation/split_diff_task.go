@@ -5,9 +5,8 @@
 package automation
 
 import (
-	"fmt"
-
 	automationpb "github.com/youtube/vitess/go/vt/proto/automation"
+	"github.com/youtube/vitess/go/vt/topo/topoproto"
 	"golang.org/x/net/context"
 )
 
@@ -17,13 +16,14 @@ type SplitDiffTask struct {
 
 // Run is part of the Task interface.
 func (t *SplitDiffTask) Run(parameters map[string]string) ([]*automationpb.TaskContainer, string, error) {
-	keyspaceAndDestShard := fmt.Sprintf("%v/%v", parameters["keyspace"], parameters["dest_shard"])
-
 	args := []string{"SplitDiff"}
 	if excludeTables := parameters["exclude_tables"]; excludeTables != "" {
 		args = append(args, "--exclude_tables="+excludeTables)
 	}
-	args = append(args, keyspaceAndDestShard)
+	if minHealthyRdonlyTablets := parameters["min_healthy_rdonly_tablets"]; minHealthyRdonlyTablets != "" {
+		args = append(args, "--min_healthy_rdonly_tablets="+minHealthyRdonlyTablets)
+	}
+	args = append(args, topoproto.KeyspaceShardString(parameters["keyspace"], parameters["dest_shard"]))
 	output, err := ExecuteVtworker(context.TODO(), parameters["vtworker_endpoint"], args)
 
 	// TODO(mberlin): Remove explicit reset when vtworker supports it implicility.
@@ -41,5 +41,5 @@ func (t *SplitDiffTask) RequiredParameters() []string {
 
 // OptionalParameters is part of the Task interface.
 func (t *SplitDiffTask) OptionalParameters() []string {
-	return []string{"exclude_tables"}
+	return []string{"exclude_tables", "min_healthy_rdonly_tablets"}
 }

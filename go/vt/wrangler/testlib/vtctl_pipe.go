@@ -5,14 +5,19 @@
 package testlib
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
 	"google.golang.org/grpc"
 
+	"github.com/youtube/vitess/go/vt/logutil"
+	"github.com/youtube/vitess/go/vt/servenv"
 	"github.com/youtube/vitess/go/vt/topo"
 	"github.com/youtube/vitess/go/vt/vtctl/grpcvtctlserver"
 	"github.com/youtube/vitess/go/vt/vtctl/vtctlclient"
@@ -23,13 +28,10 @@ import (
 	_ "github.com/youtube/vitess/go/vt/vtctl/grpcvtctlclient"
 )
 
-func init() {
-	// make sure we use the right protocol
-	flag.Set("vtctl_client_protocol", "grpc")
-}
+var servenvInitialized sync.Once
 
 // VtctlPipe is a vtctl server based on a topo server, and a client that
-// is connected to it via bson rpc.
+// is connected to it via gRPC.
 type VtctlPipe struct {
 	listener net.Listener
 	client   vtctlclient.VtctlClient
@@ -38,6 +40,16 @@ type VtctlPipe struct {
 
 // NewVtctlPipe creates a new VtctlPipe based on the given topo server.
 func NewVtctlPipe(t *testing.T, ts topo.Server) *VtctlPipe {
+	// Register all vtctl commands
+	servenvInitialized.Do(func() {
+		// make sure we use the right protocol
+		flag.Set("vtctl_client_protocol", "grpc")
+
+		// Enable all query groups
+		flag.Set("enable_queries", "true")
+		servenv.FireRunHooks()
+	})
+
 	// Listen on a random port
 	listener, err := net.Listen("tcp", ":0")
 	if err != nil {
@@ -71,15 +83,47 @@ func (vp *VtctlPipe) Close() {
 // Run executes the provided command remotely, logs the output in the
 // test logs, and returns the command error.
 func (vp *VtctlPipe) Run(args []string) error {
+	return vp.run(args, func(line string) {
+		vp.t.Log(line)
+	})
+}
+
+// RunAndOutput is similar to Run, but returns the output as a multi-line string
+// instead of logging it.
+func (vp *VtctlPipe) RunAndOutput(args []string) (string, error) {
+	var output bytes.Buffer
+	err := vp.run(args, func(line string) {
+		output.WriteString(line)
+	})
+	return output.String(), err
+}
+
+func (vp *VtctlPipe) run(args []string, outputFunc func(string)) error {
 	actionTimeout := 30 * time.Second
 	ctx := context.Background()
 
-	c, errFunc, err := vp.client.ExecuteVtctlCommand(ctx, args, actionTimeout)
+	stream, err := vp.client.ExecuteVtctlCommand(ctx, args, actionTimeout)
 	if err != nil {
 		return fmt.Errorf("VtctlPipe.Run() failed: %v", err)
 	}
-	for le := range c {
-		vp.t.Logf(le.String())
+	for {
+		le, err := stream.Recv()
+		switch err {
+		case nil:
+			outputFunc(logutil.EventString(le))
+		case io.EOF:
+			return nil
+		default:
+			return err
+		}
 	}
-	return errFunc()
+}
+
+// RunAndStreamOutput returns the output of the vtctl command as a channel.
+// When the channcel is closed, the command did finish.
+func (vp *VtctlPipe) RunAndStreamOutput(args []string) (logutil.EventStream, error) {
+	actionTimeout := 30 * time.Second
+	ctx := context.Background()
+
+	return vp.client.ExecuteVtctlCommand(ctx, args, actionTimeout)
 }

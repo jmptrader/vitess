@@ -16,14 +16,23 @@ import (
 // All methods should be thread safe (i.e. multiple go routines can
 // call these methods simultaneously).
 type Logger interface {
-	// The three usual interfaces, format should not contain the trailing '\n'
+	// Infof logs at INFO level. A newline is appended if missing.
 	Infof(format string, v ...interface{})
+	// Warningf logs at WARNING level. A newline is appended if missing.
 	Warningf(format string, v ...interface{})
+	// Errorf logs at ERROR level. A newline is appended if missing.
 	Errorf(format string, v ...interface{})
 
-	// Printf will just display information on stdout when possible,
-	// and will not add any '\n'.
+	// Printf will just display information on stdout when possible.
+	// No newline is appended.
 	Printf(format string, v ...interface{})
+
+	// InfoDepth allows call frame depth to be adjusted when logging to INFO.
+	InfoDepth(depth int, s string)
+	// WarningDepth allows call frame depth to be adjusted when logging to WARNING.
+	WarningDepth(depth int, s string)
+	// ErrorDepth allows call frame depth to be adjusted when logging to ERROR.
+	ErrorDepth(depth int, s string)
 }
 
 // EventToBuffer formats an individual Event into a buffer, without the
@@ -74,129 +83,140 @@ func EventString(event *logutilpb.Event) string {
 	return buf.String()
 }
 
-// ChannelLogger is a Logger that sends the logging events through a channel for
-// consumption.
-type ChannelLogger chan *logutilpb.Event
-
-// NewChannelLogger returns a ChannelLogger fo the given size
-func NewChannelLogger(size int) ChannelLogger {
-	return make(chan *logutilpb.Event, size)
+// LogEvent sends an event to a Logger, using the level specified in the event.
+// The event struct is converted to a string with EventString().
+func LogEvent(logger Logger, event *logutilpb.Event) {
+	switch event.Level {
+	case logutilpb.Level_INFO:
+		logger.InfoDepth(1, EventString(event))
+	case logutilpb.Level_WARNING:
+		logger.WarningDepth(1, EventString(event))
+	case logutilpb.Level_ERROR:
+		logger.ErrorDepth(1, EventString(event))
+	case logutilpb.Level_CONSOLE:
+		// Note we can't just pass the string, because it might contain '%'.
+		logger.Printf("%s", EventString(event))
+	}
 }
 
-// Infof is part of the Logger interface
-func (cl ChannelLogger) Infof(format string, v ...interface{}) {
-	file, line := fileAndLine(2)
-	(chan *logutilpb.Event)(cl) <- &logutilpb.Event{
+// CallbackLogger is a logger that sends the logging event to a callback
+// for consumption.
+type CallbackLogger struct {
+	f func(*logutilpb.Event)
+}
+
+// NewCallbackLogger returns a new logger to the given callback.
+// Note this and the other objects using this object should either
+// all use pointer receivers, or non-pointer receivers.
+// (that is ChannelLogger and MemoryLogger). That way they can share the
+// 'depth' parameter freely. In this code now, they all use pointer receivers.
+func NewCallbackLogger(f func(*logutilpb.Event)) *CallbackLogger {
+	return &CallbackLogger{f}
+}
+
+// InfoDepth is part of the Logger interface.
+func (cl *CallbackLogger) InfoDepth(depth int, s string) {
+	file, line := fileAndLine(2 + depth)
+	cl.f(&logutilpb.Event{
 		Time:  TimeToProto(time.Now()),
 		Level: logutilpb.Level_INFO,
 		File:  file,
 		Line:  line,
-		Value: fmt.Sprintf(format, v...),
-	}
+		Value: s,
+	})
 }
 
-// Warningf is part of the Logger interface
-func (cl ChannelLogger) Warningf(format string, v ...interface{}) {
-	file, line := fileAndLine(2)
-	(chan *logutilpb.Event)(cl) <- &logutilpb.Event{
+// WarningDepth is part of the Logger interface
+func (cl *CallbackLogger) WarningDepth(depth int, s string) {
+	file, line := fileAndLine(2 + depth)
+	cl.f(&logutilpb.Event{
 		Time:  TimeToProto(time.Now()),
 		Level: logutilpb.Level_WARNING,
 		File:  file,
 		Line:  line,
-		Value: fmt.Sprintf(format, v...),
-	}
+		Value: s,
+	})
 }
 
-// Errorf is part of the Logger interface
-func (cl ChannelLogger) Errorf(format string, v ...interface{}) {
-	file, line := fileAndLine(2)
-	(chan *logutilpb.Event)(cl) <- &logutilpb.Event{
+// ErrorDepth is part of the Logger interface
+func (cl *CallbackLogger) ErrorDepth(depth int, s string) {
+	file, line := fileAndLine(2 + depth)
+	cl.f(&logutilpb.Event{
 		Time:  TimeToProto(time.Now()),
 		Level: logutilpb.Level_ERROR,
 		File:  file,
 		Line:  line,
-		Value: fmt.Sprintf(format, v...),
-	}
+		Value: s,
+	})
 }
 
-// Printf is part of the Logger interface
-func (cl ChannelLogger) Printf(format string, v ...interface{}) {
+// Infof is part of the Logger interface.
+func (cl *CallbackLogger) Infof(format string, v ...interface{}) {
+	cl.InfoDepth(1, fmt.Sprintf(format, v...))
+}
+
+// Warningf is part of the Logger interface.
+func (cl *CallbackLogger) Warningf(format string, v ...interface{}) {
+	cl.WarningDepth(1, fmt.Sprintf(format, v...))
+}
+
+// Errorf is part of the Logger interface.
+func (cl *CallbackLogger) Errorf(format string, v ...interface{}) {
+	cl.ErrorDepth(1, fmt.Sprintf(format, v...))
+}
+
+// Printf is part of the Logger interface.
+func (cl *CallbackLogger) Printf(format string, v ...interface{}) {
 	file, line := fileAndLine(2)
-	(chan *logutilpb.Event)(cl) <- &logutilpb.Event{
+	cl.f(&logutilpb.Event{
 		Time:  TimeToProto(time.Now()),
 		Level: logutilpb.Level_CONSOLE,
 		File:  file,
 		Line:  line,
 		Value: fmt.Sprintf(format, v...),
+	})
+}
+
+// ChannelLogger is a Logger that sends the logging events through a channel for
+// consumption.
+type ChannelLogger struct {
+	CallbackLogger
+	C chan *logutilpb.Event
+}
+
+// NewChannelLogger returns a CallbackLogger which will write the data
+// on a channel
+func NewChannelLogger(size int) *ChannelLogger {
+	c := make(chan *logutilpb.Event, size)
+	return &ChannelLogger{
+		CallbackLogger: CallbackLogger{
+			f: func(e *logutilpb.Event) {
+				c <- e
+			},
+		},
+		C: c,
 	}
 }
 
 // MemoryLogger keeps the logging events in memory.
 // All protected by a mutex.
 type MemoryLogger struct {
+	CallbackLogger
+
+	// mu protects the Events
 	mu     sync.Mutex
 	Events []*logutilpb.Event
 }
 
 // NewMemoryLogger returns a new MemoryLogger
 func NewMemoryLogger() *MemoryLogger {
-	return &MemoryLogger{}
-}
-
-// Infof is part of the Logger interface
-func (ml *MemoryLogger) Infof(format string, v ...interface{}) {
-	file, line := fileAndLine(2)
-	ml.mu.Lock()
-	defer ml.mu.Unlock()
-	ml.Events = append(ml.Events, &logutilpb.Event{
-		Time:  TimeToProto(time.Now()),
-		Level: logutilpb.Level_INFO,
-		File:  file,
-		Line:  line,
-		Value: fmt.Sprintf(format, v...),
-	})
-}
-
-// Warningf is part of the Logger interface
-func (ml *MemoryLogger) Warningf(format string, v ...interface{}) {
-	file, line := fileAndLine(2)
-	ml.mu.Lock()
-	defer ml.mu.Unlock()
-	ml.Events = append(ml.Events, &logutilpb.Event{
-		Time:  TimeToProto(time.Now()),
-		Level: logutilpb.Level_WARNING,
-		File:  file,
-		Line:  line,
-		Value: fmt.Sprintf(format, v...),
-	})
-}
-
-// Errorf is part of the Logger interface
-func (ml *MemoryLogger) Errorf(format string, v ...interface{}) {
-	file, line := fileAndLine(2)
-	ml.mu.Lock()
-	defer ml.mu.Unlock()
-	ml.Events = append(ml.Events, &logutilpb.Event{
-		Time:  TimeToProto(time.Now()),
-		Level: logutilpb.Level_ERROR,
-		File:  file,
-		Line:  line,
-		Value: fmt.Sprintf(format, v...),
-	})
-}
-
-// Printf is part of the Logger interface
-func (ml *MemoryLogger) Printf(format string, v ...interface{}) {
-	file, line := fileAndLine(2)
-	ml.mu.Lock()
-	defer ml.mu.Unlock()
-	ml.Events = append(ml.Events, &logutilpb.Event{
-		Time:  TimeToProto(time.Now()),
-		Level: logutilpb.Level_CONSOLE,
-		File:  file,
-		Line:  line,
-		Value: fmt.Sprintf(format, v...),
-	})
+	ml := &MemoryLogger{}
+	ml.CallbackLogger.f = func(e *logutilpb.Event) {
+		ml.mu.Lock()
+		defer ml.mu.Unlock()
+		ml.Events = append(ml.Events, e)
+	}
+	return ml
 }
 
 // String returns all the lines in one String, separated by '\n'
@@ -245,22 +265,37 @@ func NewTeeLogger(one, two Logger) *TeeLogger {
 	}
 }
 
+// InfoDepth is part of the Logger interface
+func (tl *TeeLogger) InfoDepth(depth int, s string) {
+	tl.One.InfoDepth(1+depth, s)
+	tl.Two.InfoDepth(1+depth, s)
+}
+
+// WarningDepth is part of the Logger interface
+func (tl *TeeLogger) WarningDepth(depth int, s string) {
+	tl.One.WarningDepth(1+depth, s)
+	tl.Two.WarningDepth(1+depth, s)
+}
+
+// ErrorDepth is part of the Logger interface
+func (tl *TeeLogger) ErrorDepth(depth int, s string) {
+	tl.One.ErrorDepth(1+depth, s)
+	tl.Two.ErrorDepth(1+depth, s)
+}
+
 // Infof is part of the Logger interface
 func (tl *TeeLogger) Infof(format string, v ...interface{}) {
-	tl.One.Infof(format, v...)
-	tl.Two.Infof(format, v...)
+	tl.InfoDepth(1, fmt.Sprintf(format, v...))
 }
 
 // Warningf is part of the Logger interface
 func (tl *TeeLogger) Warningf(format string, v ...interface{}) {
-	tl.One.Warningf(format, v...)
-	tl.Two.Warningf(format, v...)
+	tl.WarningDepth(1, fmt.Sprintf(format, v...))
 }
 
 // Errorf is part of the Logger interface
 func (tl *TeeLogger) Errorf(format string, v ...interface{}) {
-	tl.One.Errorf(format, v...)
-	tl.Two.Errorf(format, v...)
+	tl.ErrorDepth(1, fmt.Sprintf(format, v...))
 }
 
 // Printf is part of the Logger interface

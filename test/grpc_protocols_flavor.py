@@ -5,11 +5,15 @@ from grpc.framework.interfaces.face import face
 
 import protocols_flavor
 
+# Now imports all the implementations we need.
+# We will change this to explicit registration soon.
+from vtctl import grpc_vtctl_client  # pylint: disable=unused-import
+from vtdb import grpc_update_stream  # pylint: disable=unused-import
+from vtdb import grpc_vtgate_client  # pylint: disable=unused-import
+
 
 class GRpcProtocolsFlavor(protocols_flavor.ProtocolsFlavor):
-  """Overrides to use gRPC everywhere where it is supported.
-
-  If not supported yet, use GoRPC.
+  """Definitons to use gRPC everywhere.
   """
 
   def binlog_player_protocol(self):
@@ -33,31 +37,34 @@ class GRpcProtocolsFlavor(protocols_flavor.ProtocolsFlavor):
   def tabletconn_protocol(self):
     return 'grpc'
 
+  def throttler_client_protocol(self):
+    return 'grpc'
+
   def vtgate_protocol(self):
     return 'grpc'
 
   def vtgate_python_protocol(self):
-    return 'gorpc'
+    return 'grpc'
+
+  def vtgate_python_types(self):
+    return 'proto3'
 
   def client_error_exception_type(self):
-    return face.RemoteError
+    return face.AbortionError
 
   def rpc_timeout_message(self):
     return 'context deadline exceeded'
 
   def service_map(self):
     return [
-        'bsonrpc-vt-vtgateservice',
+        'grpc-tabletmanager',
+        'grpc-throttler',
         'grpc-queryservice',
         'grpc-updatestream',
         'grpc-vtctl',
         'grpc-vtworker',
-        'grpc-tabletmanager',
         'grpc-vtgateservice',
         ]
 
   def vttest_protocol(self):
-    return 'gorpc'
-
-
-protocols_flavor.register_flavor('grpc', GRpcProtocolsFlavor)
+    return 'grpc'

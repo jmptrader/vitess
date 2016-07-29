@@ -22,24 +22,20 @@ from mysql_flavor import mysql_flavor
 
 src_master = tablet.Tablet()
 src_replica = tablet.Tablet()
-src_rdonly1 = tablet.Tablet()
-src_rdonly2 = tablet.Tablet()
+src_rdonly = tablet.Tablet()
 dst_master = tablet.Tablet()
 dst_replica = tablet.Tablet()
+dst_rdonly = tablet.Tablet()
+
+all_tablets = [src_master, src_replica, src_rdonly, dst_master, dst_replica,
+               dst_rdonly]
 
 
 def setUpModule():
   try:
     environment.topo_server().setup()
 
-    setup_procs = [
-        src_master.init_mysql(),
-        src_replica.init_mysql(),
-        src_rdonly1.init_mysql(),
-        src_rdonly2.init_mysql(),
-        dst_master.init_mysql(),
-        dst_replica.init_mysql(),
-        ]
+    setup_procs = [t.init_mysql() for t in all_tablets]
     utils.Vtctld().start()
     utils.wait_procs(setup_procs)
 
@@ -51,18 +47,17 @@ def setUpModule():
 
     src_master.init_tablet('master', 'test_keyspace', '0')
     src_replica.init_tablet('replica', 'test_keyspace', '0')
-    src_rdonly1.init_tablet('rdonly', 'test_keyspace', '0')
-    src_rdonly2.init_tablet('rdonly', 'test_keyspace', '0')
+    src_rdonly.init_tablet('rdonly', 'test_keyspace', '0')
 
-    utils.run_vtctl(['RebuildShardGraph', 'test_keyspace/0'])
     utils.validate_topology()
 
-    for t in [src_master, src_replica, src_rdonly1, src_rdonly2]:
+    for t in [src_master, src_replica, src_rdonly]:
       t.create_db('vt_test_keyspace')
       t.start_vttablet(wait_for_state=None)
 
-    for t in [src_master, src_replica, src_rdonly1, src_rdonly2]:
-      t.wait_for_vttablet_state('SERVING')
+    src_master.wait_for_vttablet_state('SERVING')
+    for t in [src_replica, src_rdonly]:
+      t.wait_for_vttablet_state('NOT_SERVING')
 
     utils.run_vtctl(['InitShardMaster', 'test_keyspace/0',
                      src_master.tablet_alias], auto_log=True)
@@ -82,13 +77,17 @@ def setUpModule():
                      'test_keyspace'], auto_log=True)
 
     # run a health check on source replica so it responds to discovery
-    utils.run_vtctl(['RunHealthCheck', src_replica.tablet_alias, 'replica'])
+    # (for binlog players) and on the source rdonlys (for workers)
+    utils.run_vtctl(['RunHealthCheck', src_replica.tablet_alias])
+    utils.run_vtctl(['RunHealthCheck', src_rdonly.tablet_alias])
 
-    # Create destination shard.
+    # Create destination shard (won't be serving as there is no DB)
     dst_master.init_tablet('master', 'test_keyspace', '-')
     dst_replica.init_tablet('replica', 'test_keyspace', '-')
+    dst_rdonly.init_tablet('rdonly', 'test_keyspace', '-')
     dst_master.start_vttablet(wait_for_state='NOT_SERVING')
     dst_replica.start_vttablet(wait_for_state='NOT_SERVING')
+    dst_rdonly.start_vttablet(wait_for_state='NOT_SERVING')
 
     utils.run_vtctl(['InitShardMaster', 'test_keyspace/-',
                      dst_master.tablet_alias], auto_log=True)
@@ -97,14 +96,13 @@ def setUpModule():
     utils.run_vtctl(['CopySchemaShard', src_replica.tablet_alias,
                      'test_keyspace/-'], auto_log=True)
 
-    # run the clone worked (this is a degenerate case, source and destination
+    # run the clone worker (this is a degenerate case, source and destination
     # both have the full keyrange. Happens to work correctly).
     logging.debug('Running the clone worker to start binlog stream...')
     utils.run_vtworker(['--cell', 'test_nj',
                         'SplitClone',
-                        '--strategy=-populate_blp_checkpoint',
-                        '--source_reader_count', '10',
                         '--min_table_size_for_split', '1',
+                        '--min_healthy_rdonly_tablets', '1',
                         'test_keyspace/0'],
                        auto_log=True)
     dst_master.wait_for_binlog_player_count(1)
@@ -117,32 +115,21 @@ def setUpModule():
 
 
 def tearDownModule():
+  utils.required_teardown()
   if utils.options.skip_teardown:
     return
 
-  tablet.kill_tablets([src_master, src_replica, src_rdonly1, src_rdonly2,
-                       dst_master, dst_replica])
+  tablet.kill_tablets(all_tablets)
 
-  teardown_procs = [
-      src_master.teardown_mysql(),
-      src_replica.teardown_mysql(),
-      src_rdonly1.teardown_mysql(),
-      src_rdonly2.teardown_mysql(),
-      dst_master.teardown_mysql(),
-      dst_replica.teardown_mysql(),
-      ]
+  teardown_procs = [t.teardown_mysql() for t in all_tablets]
   utils.wait_procs(teardown_procs, raise_on_error=False)
 
   environment.topo_server().teardown()
   utils.kill_sub_processes()
   utils.remove_tmp_files()
 
-  src_master.remove_tree()
-  src_replica.remove_tree()
-  src_rdonly1.remove_tree()
-  src_rdonly2.remove_tree()
-  dst_master.remove_tree()
-  dst_replica.remove_tree()
+  for t in all_tablets:
+    t.remove_tree()
 
 
 def _get_update_stream(tblt):

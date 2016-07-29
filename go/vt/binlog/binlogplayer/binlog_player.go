@@ -11,7 +11,6 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
-	"io"
 	"sync"
 	"time"
 
@@ -26,6 +25,7 @@ import (
 	"github.com/youtube/vitess/go/vt/mysqlctl/replication"
 	binlogdatapb "github.com/youtube/vitess/go/vt/proto/binlogdata"
 	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	"github.com/youtube/vitess/go/vt/throttler"
 )
 
 var (
@@ -88,12 +88,11 @@ func NewStats() *Stats {
 
 // BinlogPlayer is handling reading a stream of updates from BinlogServer
 type BinlogPlayer struct {
-	endPoint *topodatapb.EndPoint
+	tablet   *topodatapb.Tablet
 	dbClient VtClient
 
 	// for key range base requests
-	keyspaceIDType topodatapb.KeyspaceIdType
-	keyRange       *topodatapb.KeyRange
+	keyRange *topodatapb.KeyRange
 
 	// for table base requests
 	tables []string
@@ -111,14 +110,13 @@ type BinlogPlayer struct {
 // replicating the provided keyrange, starting at the startPosition,
 // and updating _vt.blp_checkpoint with uid=startPosition.Uid.
 // If !stopPosition.IsZero(), it will stop when reaching that position.
-func NewBinlogPlayerKeyRange(dbClient VtClient, endPoint *topodatapb.EndPoint, keyspaceIDType topodatapb.KeyspaceIdType, keyRange *topodatapb.KeyRange, uid uint32, startPosition string, stopPosition string, blplStats *Stats) (*BinlogPlayer, error) {
+func NewBinlogPlayerKeyRange(dbClient VtClient, tablet *topodatapb.Tablet, keyRange *topodatapb.KeyRange, uid uint32, startPosition string, stopPosition string, blplStats *Stats) (*BinlogPlayer, error) {
 	result := &BinlogPlayer{
-		endPoint:       endPoint,
-		dbClient:       dbClient,
-		keyspaceIDType: keyspaceIDType,
-		keyRange:       keyRange,
-		uid:            uid,
-		blplStats:      blplStats,
+		tablet:    tablet,
+		dbClient:  dbClient,
+		keyRange:  keyRange,
+		uid:       uid,
+		blplStats: blplStats,
 	}
 	var err error
 	result.position, err = replication.DecodePosition(startPosition)
@@ -138,9 +136,9 @@ func NewBinlogPlayerKeyRange(dbClient VtClient, endPoint *topodatapb.EndPoint, k
 // replicating the provided tables, starting at the startPosition,
 // and updating _vt.blp_checkpoint with uid=startPosition.Uid.
 // If !stopPosition.IsZero(), it will stop when reaching that position.
-func NewBinlogPlayerTables(dbClient VtClient, endPoint *topodatapb.EndPoint, tables []string, uid uint32, startPosition string, stopPosition string, blplStats *Stats) (*BinlogPlayer, error) {
+func NewBinlogPlayerTables(dbClient VtClient, tablet *topodatapb.Tablet, tables []string, uid uint32, startPosition string, stopPosition string, blplStats *Stats) (*BinlogPlayer, error) {
 	result := &BinlogPlayer{
-		endPoint:  endPoint,
+		tablet:    tablet,
 		dbClient:  dbClient,
 		tables:    tables,
 		uid:       uid,
@@ -209,6 +207,31 @@ func ReadStartPosition(dbClient VtClient, uid uint32) (string, string, error) {
 	return qr.Rows[0][0].String(), qr.Rows[0][1].String(), nil
 }
 
+// readThrottlerSettings will retrieve the throttler settings for filtered
+// replication from the checkpoint table.
+func (blp *BinlogPlayer) readThrottlerSettings() (int64, int64, error) {
+	selectThrottlerSettings := QueryBlpThrottlerSettings(blp.uid)
+	qr, err := blp.dbClient.ExecuteFetch(selectThrottlerSettings, 1, true)
+	if err != nil {
+		return throttler.InvalidMaxRate, throttler.InvalidMaxReplicationLag, fmt.Errorf("error %v in selecting the throttler settings %v", err, selectThrottlerSettings)
+	}
+
+	if qr.RowsAffected != 1 {
+		return throttler.InvalidMaxRate, throttler.InvalidMaxReplicationLag, fmt.Errorf("checkpoint information not available in db for %v", blp.uid)
+	}
+
+	maxTPS, err := qr.Rows[0][0].ParseInt64()
+	if err != nil {
+		return throttler.InvalidMaxRate, throttler.InvalidMaxReplicationLag, fmt.Errorf("failed to parse max_tps column: %v", err)
+	}
+	maxReplicationLag, err := qr.Rows[0][1].ParseInt64()
+	if err != nil {
+		return throttler.InvalidMaxRate, throttler.InvalidMaxReplicationLag, fmt.Errorf("failed to parse max_replication_lag column: %v", err)
+	}
+
+	return maxTPS, maxReplicationLag, nil
+}
+
 func (blp *BinlogPlayer) processTransaction(tx *binlogdatapb.BinlogTransaction) (ok bool, err error) {
 	txnStartTime := time.Now()
 	if err = blp.dbClient.Begin(); err != nil {
@@ -265,8 +288,8 @@ func (blp *BinlogPlayer) exec(sql string) (*sqltypes.Result, error) {
 	queryStartTime := time.Now()
 	qr, err := blp.dbClient.ExecuteFetch(sql, 0, false)
 	blp.blplStats.Timings.Record(BlplQuery, queryStartTime)
-	if time.Now().Sub(queryStartTime) > SlowQueryThreshold {
-		log.Infof("SLOW QUERY '%s'", sql)
+	if d := time.Now().Sub(queryStartTime); d > SlowQueryThreshold {
+		log.Infof("SLOW QUERY (took %.2fs) '%s'", d.Seconds(), sql)
 	}
 	return qr, err
 }
@@ -277,12 +300,28 @@ func (blp *BinlogPlayer) exec(sql string) (*sqltypes.Result, error) {
 // It will return io.EOF if the server stops sending us updates.
 // It may return any other error it encounters.
 func (blp *BinlogPlayer) ApplyBinlogEvents(ctx context.Context) error {
+	// Instantiate the throttler based on the configuration stored in the db.
+	maxTPS, maxReplicationLag, err := blp.readThrottlerSettings()
+	if err != nil {
+		log.Error(err)
+		return err
+	}
+	t, err := throttler.NewThrottler(
+		fmt.Sprintf("BinlogPlayer/%d", blp.uid), "transactions", 1 /* threadCount */, maxTPS, maxReplicationLag)
+	if err != nil {
+		err := fmt.Errorf("failed to instantiate throttler: %v", err)
+		log.Error(err)
+		return err
+	}
+	defer t.Close()
+
+	// Log the mode of operation and when the player stops.
 	if len(blp.tables) > 0 {
 		log.Infof("BinlogPlayer client %v for tables %v starting @ '%v', server: %v",
 			blp.uid,
 			blp.tables,
 			blp.position,
-			blp.endPoint,
+			blp.tablet,
 		)
 	} else {
 		log.Infof("BinlogPlayer client %v for keyrange '%v-%v' starting @ '%v', server: %v",
@@ -290,7 +329,7 @@ func (blp *BinlogPlayer) ApplyBinlogEvents(ctx context.Context) error {
 			hex.EncodeToString(blp.keyRange.Start),
 			hex.EncodeToString(blp.keyRange.End),
 			blp.position,
-			blp.endPoint,
+			blp.tablet,
 		)
 	}
 	if !blp.stopPosition.IsZero() {
@@ -311,10 +350,11 @@ func (blp *BinlogPlayer) ApplyBinlogEvents(ctx context.Context) error {
 		return fmt.Errorf("no binlog player client factory named %v", *binlogPlayerProtocol)
 	}
 	blplClient := clientFactory()
-	err := blplClient.Dial(blp.endPoint, *BinlogPlayerConnTimeout)
+	err = blplClient.Dial(blp.tablet, *BinlogPlayerConnTimeout)
 	if err != nil {
-		log.Errorf("Error dialing binlog server: %v", err)
-		return fmt.Errorf("error dialing binlog server: %v", err)
+		err := fmt.Errorf("error dialing binlog server: %v", err)
+		log.Error(err)
+		return err
 	}
 	defer blplClient.Close()
 
@@ -330,6 +370,11 @@ func (blp *BinlogPlayer) ApplyBinlogEvents(ctx context.Context) error {
 		blp.currentCharset = blp.defaultCharset
 		// Restore original charset when we're done.
 		defer func() {
+			// If the connection has been closed, there's no need to restore
+			// this connection-specific setting.
+			if dbClient.dbConn == nil {
+				return
+			}
 			log.Infof("restoring original charset %v", blp.defaultCharset)
 			if csErr := dbClient.dbConn.SetCharset(blp.defaultCharset); csErr != nil {
 				log.Errorf("can't restore original charset %v: %v", blp.defaultCharset, csErr)
@@ -337,19 +382,54 @@ func (blp *BinlogPlayer) ApplyBinlogEvents(ctx context.Context) error {
 		}()
 	}
 
-	var responseChan chan *binlogdatapb.BinlogTransaction
-	var errFunc ErrFunc
+	var stream BinlogTransactionStream
 	if len(blp.tables) > 0 {
-		responseChan, errFunc, err = blplClient.StreamTables(ctx, replication.EncodePosition(blp.position), blp.tables, blp.defaultCharset)
+		stream, err = blplClient.StreamTables(ctx, replication.EncodePosition(blp.position), blp.tables, blp.defaultCharset)
 	} else {
-		responseChan, errFunc, err = blplClient.StreamKeyRange(ctx, replication.EncodePosition(blp.position), blp.keyspaceIDType, blp.keyRange, blp.defaultCharset)
+		stream, err = blplClient.StreamKeyRange(ctx, replication.EncodePosition(blp.position), blp.keyRange, blp.defaultCharset)
 	}
 	if err != nil {
-		log.Errorf("Error sending streaming query to binlog server: %v", err)
-		return fmt.Errorf("error sending streaming query to binlog server: %v", err)
+		err := fmt.Errorf("error sending streaming query to binlog server: %v", err)
+		log.Error(err)
+		return err
 	}
 
-	for response := range responseChan {
+	for {
+		// Block if we are throttled.
+		for {
+			backoff := t.Throttle(0 /* threadID */)
+			if backoff == throttler.NotThrottled {
+				break
+			}
+			// We don't bother checking for context cancellation here because the
+			// sleep will block only up to 1 second. (Usually, backoff is 1s / rate
+			// e.g. a rate of 1000 TPS results into a backoff of 1 ms.)
+			time.Sleep(backoff)
+		}
+
+		// get the response
+		response, err := stream.Recv()
+		if err != nil {
+			switch err {
+			case context.Canceled:
+				return nil
+			default:
+				// if the context is canceled, we
+				// return nil (some RPC
+				// implementations will remap the
+				// context error to their own errors)
+				select {
+				case <-ctx.Done():
+					if ctx.Err() == context.Canceled {
+						return nil
+					}
+				default:
+				}
+				return fmt.Errorf("Error received from Stream %v", err)
+			}
+		}
+
+		// process the transaction
 		for {
 			ok, err = blp.processTransaction(response)
 			if err != nil {
@@ -368,24 +448,6 @@ func (blp *BinlogPlayer) ApplyBinlogEvents(ctx context.Context) error {
 			time.Sleep(1 * time.Second)
 		}
 	}
-	switch err := errFunc(); err {
-	case nil:
-		return io.EOF
-	case context.Canceled:
-		return nil
-	default:
-		// if the context is canceled, we return nil (some RPC
-		// implementations will remap the context error to their own
-		// errors)
-		select {
-		case <-ctx.Done():
-			if ctx.Err() == context.Canceled {
-				return nil
-			}
-		default:
-		}
-		return fmt.Errorf("Error received from ServeBinlog %v", err)
-	}
 }
 
 // CreateBlpCheckpoint returns the statements required to create
@@ -396,19 +458,22 @@ func CreateBlpCheckpoint() []string {
 		`CREATE TABLE IF NOT EXISTS _vt.blp_checkpoint (
   source_shard_uid INT(10) UNSIGNED NOT NULL,
   pos VARCHAR(250) DEFAULT NULL,
-  time_updated BIGINT UNSIGNED NOT NULL,
-  transaction_timestamp BIGINT UNSIGNED NOT NULL,
+  max_tps BIGINT(20) NOT NULL,
+  max_replication_lag BIGINT(20) NOT NULL,
+  time_updated BIGINT(20) UNSIGNED NOT NULL,
+  transaction_timestamp BIGINT(20) UNSIGNED NOT NULL,
   flags VARCHAR(250) DEFAULT NULL,
-  PRIMARY KEY (source_shard_uid)) ENGINE=InnoDB`}
+  PRIMARY KEY (source_shard_uid)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8`}
 }
 
 // PopulateBlpCheckpoint returns a statement to populate the first value into
 // the _vt.blp_checkpoint table.
-func PopulateBlpCheckpoint(index uint32, position string, timeUpdated int64, flags string) string {
+func PopulateBlpCheckpoint(index uint32, position string, maxTPS int64, maxReplicationLag int64, timeUpdated int64, flags string) string {
 	return fmt.Sprintf("INSERT INTO _vt.blp_checkpoint "+
-		"(source_shard_uid, pos, time_updated, transaction_timestamp, flags) "+
-		"VALUES (%v, '%v', %v, 0, '%v')",
-		index, position, timeUpdated, flags)
+		"(source_shard_uid, pos, max_tps, max_replication_lag, time_updated, transaction_timestamp, flags) "+
+		"VALUES (%v, '%v', %v, %v, %v, 0, '%v')",
+		index, position, maxTPS, maxReplicationLag, timeUpdated, flags)
 }
 
 // updateBlpCheckpoint returns a statement to update a value in the
@@ -433,4 +498,11 @@ func updateBlpCheckpoint(uid uint32, pos replication.Position, timeUpdated int64
 // given shard from the _vt.blp_checkpoint table.
 func QueryBlpCheckpoint(index uint32) string {
 	return fmt.Sprintf("SELECT pos, flags FROM _vt.blp_checkpoint WHERE source_shard_uid=%v", index)
+}
+
+// QueryBlpThrottlerSettings returns a statement to query the throttler settings
+// (used by filtered replication) for a given shard from the_vt.blp_checkpoint
+// table.
+func QueryBlpThrottlerSettings(index uint32) string {
+	return fmt.Sprintf("SELECT max_tps, max_replication_lag FROM _vt.blp_checkpoint WHERE source_shard_uid=%v", index)
 }

@@ -38,7 +38,7 @@ func TestCharaterSet(t *testing.T) {
 		},
 		RowsAffected: 1,
 		Rows: [][]sqltypes.Value{
-			[]sqltypes.Value{
+			{
 				sqltypes.MakeTrusted(sqltypes.Int32, []byte("1")),
 				sqltypes.MakeTrusted(sqltypes.Float32, []byte("1.12345")),
 				sqltypes.MakeTrusted(sqltypes.VarChar, []byte("\xc2\xa2")),
@@ -120,7 +120,7 @@ func TestInts(t *testing.T) {
 		},
 		RowsAffected: 1,
 		Rows: [][]sqltypes.Value{
-			[]sqltypes.Value{
+			{
 				sqltypes.MakeTrusted(sqltypes.Int8, []byte("-128")),
 				sqltypes.MakeTrusted(sqltypes.Uint8, []byte("255")),
 				sqltypes.MakeTrusted(sqltypes.Int16, []byte("-32768")),
@@ -132,6 +132,31 @@ func TestInts(t *testing.T) {
 				sqltypes.MakeTrusted(sqltypes.Int64, []byte("-9223372036854775808")),
 				sqltypes.MakeTrusted(sqltypes.Uint64, []byte("18446744073709551615")),
 				sqltypes.MakeTrusted(sqltypes.Year, []byte("2012")),
+			},
+		},
+	}
+	if !reflect.DeepEqual(*qr, want) {
+		t.Errorf("Execute: \n%#v, want \n%#v", *qr, want)
+	}
+	// This test was added because the following query causes mysql to
+	// return flags with both binary and unsigned set. The test ensures
+	// that a Uint64 is produced in spite of the stray binary flag.
+	qr, err = client.Execute("select max(bigu) from vitess_ints", nil)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	want = sqltypes.Result{
+		Fields: []*querypb.Field{
+			{
+				Name: "max(bigu)",
+				Type: sqltypes.Uint64,
+			},
+		},
+		RowsAffected: 1,
+		Rows: [][]sqltypes.Value{
+			{
+				sqltypes.MakeTrusted(sqltypes.Uint64, []byte("18446744073709551615")),
 			},
 		},
 	}
@@ -184,7 +209,7 @@ func TestFractionals(t *testing.T) {
 		},
 		RowsAffected: 1,
 		Rows: [][]sqltypes.Value{
-			[]sqltypes.Value{
+			{
 				sqltypes.MakeTrusted(sqltypes.Int32, []byte("1")),
 				sqltypes.MakeTrusted(sqltypes.Decimal, []byte("1.99")),
 				sqltypes.MakeTrusted(sqltypes.Decimal, []byte("2.99")),
@@ -263,7 +288,7 @@ func TestStrings(t *testing.T) {
 		},
 		RowsAffected: 1,
 		Rows: [][]sqltypes.Value{
-			[]sqltypes.Value{
+			{
 				sqltypes.MakeTrusted(sqltypes.VarBinary, []byte("a")),
 				sqltypes.MakeTrusted(sqltypes.Char, []byte("b")),
 				sqltypes.MakeTrusted(sqltypes.VarChar, []byte("c")),
@@ -326,7 +351,7 @@ func TestMiscTypes(t *testing.T) {
 		},
 		RowsAffected: 1,
 		Rows: [][]sqltypes.Value{
-			[]sqltypes.Value{
+			{
 				sqltypes.MakeTrusted(sqltypes.Int32, []byte("1")),
 				sqltypes.MakeTrusted(sqltypes.Bit, []byte("\x01")),
 				sqltypes.MakeTrusted(sqltypes.Date, []byte("2012-01-01")),
@@ -356,8 +381,8 @@ func TestNull(t *testing.T) {
 		},
 		RowsAffected: 1,
 		Rows: [][]sqltypes.Value{
-			[]sqltypes.Value{
-				sqltypes.Value{},
+			{
+				{},
 			},
 		},
 	}
@@ -393,46 +418,55 @@ func TestTypeLimits(t *testing.T) {
 		}
 	}
 
-	want := "error: type mismatch"
 	mismatchCases := []struct {
 		query string
 		bv    map[string]interface{}
+		out   string
 	}{{
 		query: "insert into vitess_ints(tiny) values('str')",
 		bv:    nil,
+		out:   "error: strconv.ParseInt",
 	}, {
 		query: "insert into vitess_ints(tiny) values(:str)",
 		bv:    map[string]interface{}{"str": "str"},
+		out:   "error: strconv.ParseInt",
 	}, {
 		query: "insert into vitess_ints(tiny) values(1.2)",
 		bv:    nil,
+		out:   "error: type mismatch",
 	}, {
 		query: "insert into vitess_ints(tiny) values(:fl)",
 		bv:    map[string]interface{}{"fl": 1.2},
+		out:   "error: type mismatch",
 	}, {
 		query: "insert into vitess_strings(vb) values(1)",
 		bv:    nil,
+		out:   "error: type mismatch",
 	}, {
 		query: "insert into vitess_strings(vb) values(:id)",
 		bv:    map[string]interface{}{"id": 1},
+		out:   "error: type mismatch",
 	}, {
 		query: "insert into vitess_strings(vb) select tiny from vitess_ints",
 		bv:    nil,
+		out:   "error: type mismatch",
 	}, {
 		query: "insert into vitess_ints(tiny) select num from vitess_fracts",
 		bv:    nil,
+		out:   "error: type mismatch",
 	}, {
 		query: "insert into vitess_ints(tiny) select vb from vitess_strings",
 		bv:    nil,
+		out:   "error: type mismatch",
 	}}
-	for _, request := range mismatchCases {
-		_, err := client.Execute(request.query, request.bv)
-		if err == nil || !strings.HasPrefix(err.Error(), want) {
-			t.Errorf("Error(%s): %v, want %s", request.query, err, want)
+	for _, tcase := range mismatchCases {
+		_, err := client.Execute(tcase.query, tcase.bv)
+		if err == nil || !strings.HasPrefix(err.Error(), tcase.out) {
+			t.Errorf("Error(%s): %v, want %s", tcase.query, err, tcase.out)
 		}
 	}
 
-	want = "error: Out of range"
+	want := "error: Out of range"
 	for _, query := range []string{
 		"insert into vitess_ints(tiny) values(-129)",
 		"insert into vitess_ints(tiny) select medium from vitess_ints",

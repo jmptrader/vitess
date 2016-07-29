@@ -38,8 +38,6 @@ type QueryServiceStats struct {
 	QPSRates *stats.Rates
 	// ResultStats shows the histogram of number of rows returned.
 	ResultStats *stats.Histogram
-	// SpotCheckCount shows the number of spot check events happened.
-	SpotCheckCount *stats.Int
 }
 
 // NewQueryServiceStats returns a new QueryServiceStats instance.
@@ -53,7 +51,6 @@ func NewQueryServiceStats(statsPrefix string, enablePublishStats bool) *QuerySer
 	errorStatsName := ""
 	internalErrorsName := ""
 	resultStatsName := ""
-	spotCheckCountName := ""
 	userTableQueryCountName := ""
 	userTableQueryTimesNsName := ""
 	userTransactionCountName := ""
@@ -68,7 +65,6 @@ func NewQueryServiceStats(statsPrefix string, enablePublishStats bool) *QuerySer
 		errorStatsName = statsPrefix + "Errors"
 		internalErrorsName = statsPrefix + "InternalErrors"
 		resultStatsName = statsPrefix + "Results"
-		spotCheckCountName = statsPrefix + "RowcacheSpotCheckCount"
 		userTableQueryCountName = statsPrefix + "UserTableQueryCount"
 		userTableQueryTimesNsName = statsPrefix + "UserTableQueryTimesNs"
 		userTransactionCountName = statsPrefix + "UserTransactionCount"
@@ -83,8 +79,8 @@ func NewQueryServiceStats(statsPrefix string, enablePublishStats bool) *QuerySer
 		KillStats:  stats.NewCounters(killStatsName, "Transactions", "Queries"),
 		InfoErrors: stats.NewCounters(infoErrorsName, "Retry", "Fatal", "DupKey"),
 		ErrorStats: stats.NewCounters(errorStatsName, "Fail", "TxPoolFull", "NotInTx", "Deadlock"),
-		InternalErrors: stats.NewCounters(internalErrorsName, "Task", "MemcacheStats",
-			"Mismatch", "StrayTransactions", "Invalidation", "Panic", "HungQuery"),
+		InternalErrors: stats.NewCounters(internalErrorsName, "Task",
+			"Mismatch", "StrayTransactions", "Invalidation", "Panic", "HungQuery", "Schema"),
 		UserTableQueryCount: stats.NewMultiCounters(
 			userTableQueryCountName, []string{"TableName", "CallerID", "Type"}),
 		UserTableQueryTimesNs: stats.NewMultiCounters(
@@ -93,8 +89,8 @@ func NewQueryServiceStats(statsPrefix string, enablePublishStats bool) *QuerySer
 			userTransactionCountName, []string{"CallerID", "Conclusion"}),
 		UserTransactionTimesNs: stats.NewMultiCounters(
 			userTransactionTimesNsName, []string{"CallerID", "Conclusion"}),
-		QPSRates:       stats.NewRates(qpsRateName, queryStats, 15, 60*time.Second),
-		ResultStats:    stats.NewHistogram(resultStatsName, resultBuckets),
-		SpotCheckCount: stats.NewInt(spotCheckCountName),
+		// Sample every 5 seconds and keep samples for up to 15 minutes.
+		QPSRates:    stats.NewRates(qpsRateName, queryStats, 15*60/5, 5*time.Second),
+		ResultStats: stats.NewHistogram(resultStatsName, resultBuckets),
 	}
 }

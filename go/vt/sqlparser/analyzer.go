@@ -22,15 +22,6 @@ func GetTableName(node SimpleTableExpr) string {
 	return ""
 }
 
-// GetColName returns the column name, only if
-// it's a simple expression. Otherwise, it returns "".
-func GetColName(node Expr) string {
-	if n, ok := node.(*ColName); ok {
-		return string(n.Name)
-	}
-	return ""
-}
-
 // IsColName returns true if the ValExpr is a *ColName.
 func IsColName(node ValExpr) bool {
 	_, ok := node.(*ColName)
@@ -47,12 +38,11 @@ func IsValue(node ValExpr) bool {
 	return false
 }
 
-// HasINClause returns true if any of the conditions has an IN clause.
-func HasINClause(conditions []BoolExpr) bool {
-	for _, node := range conditions {
-		if c, ok := node.(*ComparisonExpr); ok && c.Operator == InStr {
-			return true
-		}
+// IsNull returns true if the ValExpr is SQL NULL
+func IsNull(node ValExpr) bool {
+	switch node.(type) {
+	case *NullVal:
+		return true
 	}
 	return false
 }

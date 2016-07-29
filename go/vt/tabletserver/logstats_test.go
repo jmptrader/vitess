@@ -10,9 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/net/context"
+
 	"github.com/youtube/vitess/go/sqltypes"
 	"github.com/youtube/vitess/go/vt/callinfo"
-	"golang.org/x/net/context"
+
+	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
 )
 
 func TestLogStats(t *testing.T) {
@@ -27,12 +30,12 @@ func TestLogStats(t *testing.T) {
 		t.Fatalf("there is no rows in log stats, estimated size should be 0 bytes")
 	}
 
-	logStats.Rows = [][]sqltypes.Value{[]sqltypes.Value{sqltypes.MakeString([]byte("a"))}}
+	logStats.Rows = [][]sqltypes.Value{{sqltypes.MakeString([]byte("a"))}}
 	if logStats.SizeOfResponse() <= 0 {
 		t.Fatalf("log stats has some rows, should have positive response size")
 	}
 
-	params := map[string][]string{"full": []string{}}
+	params := map[string][]string{"full": {}}
 
 	logStats.Format(url.Values(params))
 }
@@ -78,11 +81,6 @@ func TestLogStatsFormatQuerySources(t *testing.T) {
 		t.Fatalf("'mysql' should be in formated query sources")
 	}
 
-	logStats.QuerySources |= QuerySourceRowcache
-	if !strings.Contains(logStats.FmtQuerySources(), "rowcache") {
-		t.Fatalf("'rowcache' should be in formated query sources")
-	}
-
 	logStats.QuerySources |= QuerySourceConsolidator
 	if !strings.Contains(logStats.FmtQuerySources(), "consolidator") {
 		t.Fatalf("'consolidator' should be in formated query sources")
@@ -108,7 +106,7 @@ func TestLogStatsErrorStr(t *testing.T) {
 	}
 	errStr := "unknown error"
 	logStats.Error = &TabletError{
-		ErrorType: ErrFail,
+		ErrorCode: vtrpcpb.ErrorCode_UNKNOWN_ERROR,
 		Message:   errStr,
 	}
 	if !strings.Contains(logStats.ErrorStr(), errStr) {

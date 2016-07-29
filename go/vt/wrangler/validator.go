@@ -108,8 +108,6 @@ func (wr *Wrangler) validateKeyspace(ctx context.Context, keyspace string, pingT
 	}
 }
 
-// FIXME(msolomon) This validate presumes the master is up and running.
-// Even when that isn't true, there are validation processes that might be valuable.
 func (wr *Wrangler) validateShard(ctx context.Context, keyspace, shard string, pingTablets bool, wg *sync.WaitGroup, results chan<- error) {
 	shardInfo, err := wr.ts.GetShard(ctx, keyspace, shard)
 	if err != nil {
@@ -178,15 +176,15 @@ func normalizeIP(ip string) string {
 }
 
 func (wr *Wrangler) validateReplication(ctx context.Context, shardInfo *topo.ShardInfo, tabletMap map[topodatapb.TabletAlias]*topo.TabletInfo, results chan<- error) {
-	masterTablet, ok := tabletMap[*shardInfo.MasterAlias]
+	masterTabletInfo, ok := tabletMap[*shardInfo.MasterAlias]
 	if !ok {
 		results <- fmt.Errorf("master %v not in tablet map", topoproto.TabletAliasString(shardInfo.MasterAlias))
 		return
 	}
 
-	slaveList, err := wr.tmc.GetSlaves(ctx, masterTablet)
+	slaveList, err := wr.tmc.GetSlaves(ctx, masterTabletInfo.Tablet)
 	if err != nil {
-		results <- fmt.Errorf("GetSlaves(%v) failed: %v", masterTablet, err)
+		results <- fmt.Errorf("GetSlaves(%v) failed: %v", masterTabletInfo, err)
 		return
 	}
 	if len(slaveList) == 0 {
@@ -226,7 +224,7 @@ func (wr *Wrangler) pingTablets(ctx context.Context, tabletMap map[topodatapb.Ta
 		go func(tabletAlias topodatapb.TabletAlias, tabletInfo *topo.TabletInfo) {
 			defer wg.Done()
 
-			if err := wr.tmc.Ping(ctx, tabletInfo); err != nil {
+			if err := wr.tmc.Ping(ctx, tabletInfo.Tablet); err != nil {
 				results <- fmt.Errorf("Ping(%v) failed: %v tablet hostname: %v", topoproto.TabletAliasString(&tabletAlias), err, tabletInfo.Hostname)
 			}
 		}(tabletAlias, tabletInfo)

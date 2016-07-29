@@ -24,10 +24,9 @@ import (
 
 // keyRangeRequest is used to make a request for StreamKeyRange.
 type keyRangeRequest struct {
-	Position       string
-	KeyspaceIdType topodatapb.KeyspaceIdType
-	KeyRange       *topodatapb.KeyRange
-	Charset        *binlogdatapb.Charset
+	Position string
+	KeyRange *topodatapb.KeyRange
+	Charset  *binlogdatapb.Charset
 }
 
 // tablesRequest is used to make a request for StreamTables.
@@ -61,7 +60,7 @@ var testStreamEvent = &binlogdatapb.StreamEvent{
 	Category:  binlogdatapb.StreamEvent_SE_DML,
 	TableName: "table1",
 	PrimaryKeyFields: []*querypb.Field{
-		&querypb.Field{
+		{
 			Name: "id",
 			Type: sqltypes.Binary,
 		},
@@ -72,7 +71,7 @@ var testStreamEvent = &binlogdatapb.StreamEvent{
 			Values:  []byte{'1', '2', '3'},
 		},
 	},
-	Sql:           "test sql",
+	Sql:           []byte("test sql with invalid utf-8 character \x80"),
 	Timestamp:     372,
 	TransactionId: "StreamEvent returned transaction id",
 }
@@ -91,37 +90,34 @@ func (fake *FakeBinlogStreamer) ServeUpdateStream(position string, sendReply fun
 
 func testServeUpdateStream(t *testing.T, bpc binlogplayer.Client) {
 	ctx := context.Background()
-	c, errFunc, err := bpc.ServeUpdateStream(ctx, testUpdateStreamRequest)
+	stream, err := bpc.ServeUpdateStream(ctx, testUpdateStreamRequest)
 	if err != nil {
 		t.Fatalf("got error: %v", err)
 	}
-	if se, ok := <-c; !ok {
-		t.Fatalf("got no response")
+	if se, err := stream.Recv(); err != nil {
+		t.Fatalf("got error: %v", err)
 	} else {
 		if !reflect.DeepEqual(*se, *testStreamEvent) {
 			t.Errorf("got wrong result, got \n%#v expected \n%#v", *se, *testStreamEvent)
 		}
 	}
-	if se, ok := <-c; ok {
+	if se, err := stream.Recv(); err == nil {
 		t.Fatalf("got a response when error expected: %v", se)
-	}
-	if err := errFunc(); err != nil {
-		t.Errorf("got unexpected error: %v", err)
 	}
 }
 
 func testServeUpdateStreamPanics(t *testing.T, bpc binlogplayer.Client) {
 	ctx := context.Background()
-	c, errFunc, err := bpc.ServeUpdateStream(ctx, testUpdateStreamRequest)
+	stream, err := bpc.ServeUpdateStream(ctx, testUpdateStreamRequest)
 	if err != nil {
 		t.Fatalf("got error: %v", err)
 	}
-	if se, ok := <-c; ok {
+	if se, err := stream.Recv(); err == nil {
 		t.Fatalf("got a response when error expected: %v", se)
-	}
-	err = errFunc()
-	if err == nil || !strings.Contains(err.Error(), "test-triggered panic") {
-		t.Errorf("wrong error from panic: %v", err)
+	} else {
+		if !strings.Contains(err.Error(), "test-triggered panic") {
+			t.Errorf("wrong error from panic: %v", err)
+		}
 	}
 }
 
@@ -130,8 +126,7 @@ func testServeUpdateStreamPanics(t *testing.T, bpc binlogplayer.Client) {
 //
 
 var testKeyRangeRequest = &keyRangeRequest{
-	Position:       "KeyRange starting position",
-	KeyspaceIdType: topodatapb.KeyspaceIdType_UINT64,
+	Position: "KeyRange starting position",
 	KeyRange: &topodatapb.KeyRange{
 		Start: key.Uint64Key(0x7000000000000000).Bytes(),
 		End:   key.Uint64Key(0x9000000000000000).Bytes(),
@@ -152,7 +147,7 @@ var testBinlogTransaction = &binlogdatapb.BinlogTransaction{
 				Conn:   130,
 				Server: 140,
 			},
-			Sql: "my statement",
+			Sql: []byte("my statement"),
 		},
 	},
 	Timestamp:     78,
@@ -160,15 +155,14 @@ var testBinlogTransaction = &binlogdatapb.BinlogTransaction{
 }
 
 // StreamKeyRange is part of the the UpdateStream interface
-func (fake *FakeBinlogStreamer) StreamKeyRange(position string, keyspaceIdType topodatapb.KeyspaceIdType, keyRange *topodatapb.KeyRange, charset *binlogdatapb.Charset, sendReply func(reply *binlogdatapb.BinlogTransaction) error) error {
+func (fake *FakeBinlogStreamer) StreamKeyRange(position string, keyRange *topodatapb.KeyRange, charset *binlogdatapb.Charset, sendReply func(reply *binlogdatapb.BinlogTransaction) error) error {
 	if fake.panics {
 		panic(fmt.Errorf("test-triggered panic"))
 	}
 	req := &keyRangeRequest{
-		Position:       position,
-		KeyspaceIdType: keyspaceIdType,
-		KeyRange:       keyRange,
-		Charset:        charset,
+		Position: position,
+		KeyRange: keyRange,
+		Charset:  charset,
 	}
 	if !reflect.DeepEqual(req, testKeyRangeRequest) {
 		fake.t.Errorf("wrong StreamKeyRange parameter, got %+v want %+v", req, testKeyRangeRequest)
@@ -179,37 +173,34 @@ func (fake *FakeBinlogStreamer) StreamKeyRange(position string, keyspaceIdType t
 
 func testStreamKeyRange(t *testing.T, bpc binlogplayer.Client) {
 	ctx := context.Background()
-	c, errFunc, err := bpc.StreamKeyRange(ctx, testKeyRangeRequest.Position, testKeyRangeRequest.KeyspaceIdType, testKeyRangeRequest.KeyRange, testKeyRangeRequest.Charset)
+	stream, err := bpc.StreamKeyRange(ctx, testKeyRangeRequest.Position, testKeyRangeRequest.KeyRange, testKeyRangeRequest.Charset)
 	if err != nil {
 		t.Fatalf("got error: %v", err)
 	}
-	if se, ok := <-c; !ok {
-		t.Fatalf("got no response")
+	if se, err := stream.Recv(); err != nil {
+		t.Fatalf("got error: %v", err)
 	} else {
 		if !reflect.DeepEqual(*se, *testBinlogTransaction) {
 			t.Errorf("got wrong result, got %v expected %v", *se, *testBinlogTransaction)
 		}
 	}
-	if se, ok := <-c; ok {
+	if se, err := stream.Recv(); err == nil {
 		t.Fatalf("got a response when error expected: %v", se)
-	}
-	if err := errFunc(); err != nil {
-		t.Errorf("got unexpected error: %v", err)
 	}
 }
 
 func testStreamKeyRangePanics(t *testing.T, bpc binlogplayer.Client) {
 	ctx := context.Background()
-	c, errFunc, err := bpc.StreamKeyRange(ctx, testKeyRangeRequest.Position, testKeyRangeRequest.KeyspaceIdType, testKeyRangeRequest.KeyRange, testKeyRangeRequest.Charset)
+	stream, err := bpc.StreamKeyRange(ctx, testKeyRangeRequest.Position, testKeyRangeRequest.KeyRange, testKeyRangeRequest.Charset)
 	if err != nil {
 		t.Fatalf("got error: %v", err)
 	}
-	if se, ok := <-c; ok {
+	if se, err := stream.Recv(); err == nil {
 		t.Fatalf("got a response when error expected: %v", se)
-	}
-	err = errFunc()
-	if err == nil || !strings.Contains(err.Error(), "test-triggered panic") {
-		t.Errorf("wrong error from panic: %v", err)
+	} else {
+		if !strings.Contains(err.Error(), "test-triggered panic") {
+			t.Errorf("wrong error from panic: %v", err)
+		}
 	}
 }
 
@@ -246,37 +237,34 @@ func (fake *FakeBinlogStreamer) StreamTables(position string, tables []string, c
 
 func testStreamTables(t *testing.T, bpc binlogplayer.Client) {
 	ctx := context.Background()
-	c, errFunc, err := bpc.StreamTables(ctx, testTablesRequest.Position, testTablesRequest.Tables, testTablesRequest.Charset)
+	stream, err := bpc.StreamTables(ctx, testTablesRequest.Position, testTablesRequest.Tables, testTablesRequest.Charset)
 	if err != nil {
 		t.Fatalf("got error: %v", err)
 	}
-	if se, ok := <-c; !ok {
-		t.Fatalf("got no response")
+	if se, err := stream.Recv(); err != nil {
+		t.Fatalf("got error: %v", err)
 	} else {
 		if !reflect.DeepEqual(*se, *testBinlogTransaction) {
 			t.Errorf("got wrong result, got %v expected %v", *se, *testBinlogTransaction)
 		}
 	}
-	if se, ok := <-c; ok {
+	if se, err := stream.Recv(); err == nil {
 		t.Fatalf("got a response when error expected: %v", se)
-	}
-	if err := errFunc(); err != nil {
-		t.Errorf("got unexpected error: %v", err)
 	}
 }
 
 func testStreamTablesPanics(t *testing.T, bpc binlogplayer.Client) {
 	ctx := context.Background()
-	c, errFunc, err := bpc.StreamTables(ctx, testTablesRequest.Position, testTablesRequest.Tables, testTablesRequest.Charset)
+	stream, err := bpc.StreamTables(ctx, testTablesRequest.Position, testTablesRequest.Tables, testTablesRequest.Charset)
 	if err != nil {
 		t.Fatalf("got error: %v", err)
 	}
-	if se, ok := <-c; ok {
+	if se, err := stream.Recv(); err == nil {
 		t.Fatalf("got a response when error expected: %v", se)
-	}
-	err = errFunc()
-	if err == nil || !strings.Contains(err.Error(), "test-triggered panic") {
-		t.Errorf("wrong error from panic: %v", err)
+	} else {
+		if !strings.Contains(err.Error(), "test-triggered panic") {
+			t.Errorf("wrong error from panic: %v", err)
+		}
 	}
 }
 
@@ -288,8 +276,8 @@ func (fake *FakeBinlogStreamer) HandlePanic(err *error) {
 }
 
 // Run runs the test suite
-func Run(t *testing.T, bpc binlogplayer.Client, endPoint *topodatapb.EndPoint, fake *FakeBinlogStreamer) {
-	if err := bpc.Dial(endPoint, 30*time.Second); err != nil {
+func Run(t *testing.T, bpc binlogplayer.Client, tablet *topodatapb.Tablet, fake *FakeBinlogStreamer) {
+	if err := bpc.Dial(tablet, 30*time.Second); err != nil {
 		t.Fatalf("Dial failed: %v", err)
 	}
 
@@ -303,4 +291,5 @@ func Run(t *testing.T, bpc binlogplayer.Client, endPoint *topodatapb.EndPoint, f
 	testServeUpdateStreamPanics(t, bpc)
 	testStreamKeyRangePanics(t, bpc)
 	testStreamTablesPanics(t, bpc)
+	fake.panics = false
 }

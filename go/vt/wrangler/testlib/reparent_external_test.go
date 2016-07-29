@@ -22,7 +22,7 @@ import (
 	"github.com/youtube/vitess/go/vt/topotools/events"
 	"github.com/youtube/vitess/go/vt/vttest/fakesqldb"
 	"github.com/youtube/vitess/go/vt/wrangler"
-	"github.com/youtube/vitess/go/vt/zktopo"
+	"github.com/youtube/vitess/go/vt/zktopo/zktestserver"
 
 	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
 )
@@ -32,7 +32,7 @@ func TestTabletExternallyReparented(t *testing.T) {
 
 	ctx := context.Background()
 	db := fakesqldb.Register()
-	ts := zktopo.NewTestServer(t, []string{"cell1", "cell2"})
+	ts := zktestserver.New(t, []string{"cell1", "cell2"})
 	wr := wrangler.New(logutil.NewConsoleLogger(), ts, tmclient.NewTabletManagerClient())
 	vp := NewVtctlPipe(t, ts)
 	defer vp.Close()
@@ -46,13 +46,14 @@ func TestTabletExternallyReparented(t *testing.T) {
 
 	// Add a new Cell to the Shard, that doesn't map to any read topo cell,
 	// to simulate a data center being unreachable.
-	si, err := ts.GetShard(ctx, "test_keyspace", "0")
+	_, err := ts.UpdateShardFields(ctx, "test_keyspace", "0", func(si *topo.ShardInfo) error {
+		if !si.HasCell("cell666") {
+			si.Cells = append(si.Cells, "cell666")
+		}
+		return nil
+	})
 	if err != nil {
-		t.Fatalf("GetShard failed: %v", err)
-	}
-	si.Cells = append(si.Cells, "cell666")
-	if err := ts.UpdateShard(ctx, si); err != nil {
-		t.Fatalf("UpdateShard failed: %v", err)
+		t.Fatalf("UpdateShardFields failed: %v", err)
 	}
 
 	// Slightly unrelated test: make sure we can find the tablets
@@ -134,7 +135,7 @@ func TestTabletExternallyReparented(t *testing.T) {
 		t.Fatalf("GetTablet failed: %v", err)
 	}
 	waitID := makeWaitID()
-	if err := tmc.TabletExternallyReparented(context.Background(), ti, waitID); err != nil {
+	if err := tmc.TabletExternallyReparented(context.Background(), ti.Tablet, waitID); err != nil {
 		t.Fatalf("TabletExternallyReparented(slave) error: %v", err)
 	}
 	waitForExternalReparent(t, waitID)
@@ -146,20 +147,10 @@ func TestTabletExternallyReparented(t *testing.T) {
 		t.Fatalf("GetTablet failed: %v", err)
 	}
 	waitID = makeWaitID()
-	if err := tmc.TabletExternallyReparented(context.Background(), ti, waitID); err != nil {
+	if err := tmc.TabletExternallyReparented(context.Background(), ti.Tablet, waitID); err != nil {
 		t.Fatalf("TabletExternallyReparented(replica) failed: %v", err)
 	}
 	waitForExternalReparent(t, waitID)
-
-	// Now double-check the serving graph is good.
-	// Should only have one good replica left.
-	addrs, _, err := ts.GetEndPoints(ctx, "cell1", "test_keyspace", "0", topodatapb.TabletType_REPLICA)
-	if err != nil {
-		t.Fatalf("GetEndPoints failed at the end: %v", err)
-	}
-	if len(addrs.Entries) != 1 {
-		t.Fatalf("GetEndPoints has too many entries: %v", addrs)
-	}
 }
 
 // TestTabletExternallyReparentedWithDifferentMysqlPort makes sure
@@ -170,7 +161,7 @@ func TestTabletExternallyReparentedWithDifferentMysqlPort(t *testing.T) {
 
 	ctx := context.Background()
 	db := fakesqldb.Register()
-	ts := zktopo.NewTestServer(t, []string{"cell1"})
+	ts := zktestserver.New(t, []string{"cell1"})
 	wr := wrangler.New(logutil.NewConsoleLogger(), ts, tmclient.NewTabletManagerClient())
 
 	// Create an old master, a new master, two good slaves, one bad slave
@@ -206,7 +197,7 @@ func TestTabletExternallyReparentedWithDifferentMysqlPort(t *testing.T) {
 		t.Fatalf("GetTablet failed: %v", err)
 	}
 	waitID := makeWaitID()
-	if err := tmc.TabletExternallyReparented(context.Background(), ti, waitID); err != nil {
+	if err := tmc.TabletExternallyReparented(context.Background(), ti.Tablet, waitID); err != nil {
 		t.Fatalf("TabletExternallyReparented(replica) failed: %v", err)
 	}
 	waitForExternalReparent(t, waitID)
@@ -219,7 +210,7 @@ func TestTabletExternallyReparentedContinueOnUnexpectedMaster(t *testing.T) {
 
 	ctx := context.Background()
 	db := fakesqldb.Register()
-	ts := zktopo.NewTestServer(t, []string{"cell1"})
+	ts := zktestserver.New(t, []string{"cell1"})
 	wr := wrangler.New(logutil.NewConsoleLogger(), ts, tmclient.NewTabletManagerClient())
 
 	// Create an old master, a new master, two good slaves, one bad slave
@@ -251,7 +242,7 @@ func TestTabletExternallyReparentedContinueOnUnexpectedMaster(t *testing.T) {
 		t.Fatalf("GetTablet failed: %v", err)
 	}
 	waitID := makeWaitID()
-	if err := tmc.TabletExternallyReparented(context.Background(), ti, waitID); err != nil {
+	if err := tmc.TabletExternallyReparented(context.Background(), ti.Tablet, waitID); err != nil {
 		t.Fatalf("TabletExternallyReparented(replica) failed: %v", err)
 	}
 	waitForExternalReparent(t, waitID)
@@ -262,7 +253,7 @@ func TestTabletExternallyReparentedFailedOldMaster(t *testing.T) {
 
 	ctx := context.Background()
 	db := fakesqldb.Register()
-	ts := zktopo.NewTestServer(t, []string{"cell1", "cell2"})
+	ts := zktestserver.New(t, []string{"cell1", "cell2"})
 	wr := wrangler.New(logutil.NewConsoleLogger(), ts, tmclient.NewTabletManagerClient())
 
 	// Create an old master, a new master, and a good slave.
@@ -294,27 +285,17 @@ func TestTabletExternallyReparentedFailedOldMaster(t *testing.T) {
 		t.Fatalf("GetTablet failed: %v", err)
 	}
 	waitID := makeWaitID()
-	if err := tmc.TabletExternallyReparented(context.Background(), ti, waitID); err != nil {
+	if err := tmc.TabletExternallyReparented(context.Background(), ti.Tablet, waitID); err != nil {
 		t.Fatalf("TabletExternallyReparented(replica) failed: %v", err)
 	}
 	waitForExternalReparent(t, waitID)
 
-	// Now double-check the serving graph is good.
-	// Should only have one good replica left.
-	addrs, _, err := ts.GetEndPoints(ctx, "cell1", "test_keyspace", "0", topodatapb.TabletType_REPLICA)
-	if err != nil {
-		t.Fatalf("GetEndPoints failed at the end: %v", err)
-	}
-	if len(addrs.Entries) != 1 {
-		t.Fatalf("GetEndPoints has too many entries: %v", addrs)
-	}
-
-	// check the old master was converted to spare
+	// check the old master was converted to replica
 	tablet, err := ts.GetTablet(ctx, oldMaster.Tablet.Alias)
 	if err != nil {
 		t.Fatalf("GetTablet(%v) failed: %v", oldMaster.Tablet.Alias, err)
 	}
-	if tablet.Type != topodatapb.TabletType_SPARE {
+	if tablet.Type != topodatapb.TabletType_REPLICA {
 		t.Fatalf("old master should be spare but is: %v", tablet.Type)
 	}
 }

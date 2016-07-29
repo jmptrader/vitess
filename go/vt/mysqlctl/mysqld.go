@@ -59,8 +59,7 @@ type Mysqld struct {
 	appPool       *dbconnpool.ConnectionPool
 	replParams    *sqldb.ConnParams
 	dbaMysqlStats *stats.Timings
-	TabletDir     string
-	SnapshotDir   string
+	tabletDir     string
 
 	// mutex protects the fields below.
 	mutex         sync.Mutex
@@ -107,14 +106,19 @@ func NewMysqld(dbaName, appName string, config *Mycnf, dba, app, repl *sqldb.Con
 		appPool:       appPool,
 		replParams:    repl,
 		dbaMysqlStats: dbaMysqlStats,
-		TabletDir:     TabletDir(config.ServerID),
-		SnapshotDir:   SnapshotDir(config.ServerID),
+		tabletDir:     path.Dir(config.DataDir),
 	}
 }
 
 // Cnf returns the mysql config for the daemon
 func (mysqld *Mysqld) Cnf() *Mycnf {
 	return mysqld.config
+}
+
+// TabletDir returns the main tablet directory.
+// It's a method so it can be accessed through the MysqlDaemon interface.
+func (mysqld *Mysqld) TabletDir() string {
+	return mysqld.tabletDir
 }
 
 // RunMysqlUpgrade will run the mysql_upgrade program on the current install.
@@ -137,8 +141,8 @@ func (mysqld *Mysqld) RunMysqlUpgrade() error {
 		log.Warningf("VT_MYSQL_ROOT not set, skipping mysql_upgrade step: %v", err)
 		return nil
 	}
-	name := path.Join(dir, "bin/mysql_upgrade")
-	if _, err := os.Stat(name); err != nil {
+	name, err := binaryPath(dir, "mysql_upgrade")
+	if err != nil {
 		log.Warningf("mysql_upgrade binary not present, skipping it: %v", err)
 		return nil
 	}
@@ -165,7 +169,7 @@ func (mysqld *Mysqld) RunMysqlUpgrade() error {
 // Start will start the mysql daemon, either by running the 'mysqld_start'
 // hook, or by running mysqld_safe in the background.
 // If a mysqlctld address is provided in a flag, Start will run remotely.
-func (mysqld *Mysqld) Start(ctx context.Context) error {
+func (mysqld *Mysqld) Start(ctx context.Context, mysqldArgs ...string) error {
 	// Execute as remote action on mysqlctld if requested.
 	if *socketFile != "" {
 		log.Infof("executing Mysqld.Start() remotely via mysqlctld server: %v", *socketFile)
@@ -174,14 +178,14 @@ func (mysqld *Mysqld) Start(ctx context.Context) error {
 			return fmt.Errorf("can't dial mysqlctld: %v", err)
 		}
 		defer client.Close()
-		return client.Start(ctx)
+		return client.Start(ctx, mysqldArgs...)
 	}
 
 	var name string
 	ts := fmt.Sprintf("Mysqld.Start(%v)", time.Now().Unix())
 
 	// try the mysqld start hook, if any
-	switch hr := hook.NewSimpleHook("mysqld_start").Execute(); hr.ExitStatus {
+	switch hr := hook.NewHook("mysqld_start", mysqldArgs).Execute(); hr.ExitStatus {
 	case hook.HOOK_SUCCESS:
 		// hook exists and worked, we can keep going
 		name = "mysqld_start hook"
@@ -192,9 +196,13 @@ func (mysqld *Mysqld) Start(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		name = path.Join(dir, "bin/mysqld_safe")
+		name, err = binaryPath(dir, "mysqld_safe")
+		if err != nil {
+			return err
+		}
 		arg := []string{
 			"--defaults-file=" + mysqld.config.path}
+		arg = append(arg, mysqldArgs...)
 		env := []string{os.ExpandEnv("LD_LIBRARY_PATH=$VT_MYSQL_ROOT/lib/mysql")}
 
 		cmd := exec.Command(name, arg...)
@@ -317,7 +325,7 @@ func (mysqld *Mysqld) Shutdown(ctx context.Context, waitForMysqld bool) error {
 	// possibly mysql is already shutdown, check for a few files first
 	_, socketPathErr := os.Stat(mysqld.config.SocketFile)
 	_, pidPathErr := os.Stat(mysqld.config.PidFile)
-	if socketPathErr != nil && pidPathErr != nil {
+	if os.IsNotExist(socketPathErr) && os.IsNotExist(pidPathErr) {
 		log.Warningf("assuming mysqld already shut down - no socket, no pid file found")
 		return nil
 	}
@@ -335,14 +343,17 @@ func (mysqld *Mysqld) Shutdown(ctx context.Context, waitForMysqld bool) error {
 		if err != nil {
 			return err
 		}
-		name := path.Join(dir, "bin/mysqladmin")
+		name, err := binaryPath(dir, "mysqladmin")
+		if err != nil {
+			return err
+		}
 		arg := []string{
 			"-u", mysqld.dba.Uname, "-S", mysqld.config.SocketFile,
 			"shutdown"}
 		env := []string{
 			os.ExpandEnv("LD_LIBRARY_PATH=$VT_MYSQL_ROOT/lib/mysql"),
 		}
-		_, err = execCmd(name, arg, env, dir, nil)
+		_, _, err = execCmd(name, arg, env, dir, nil)
 		if err != nil {
 			return err
 		}
@@ -351,10 +362,13 @@ func (mysqld *Mysqld) Shutdown(ctx context.Context, waitForMysqld bool) error {
 		return fmt.Errorf("mysqld_shutdown hook failed: %v", hr.String())
 	}
 
-	// Wait for mysqld to really stop. Use the sock file as a
+	// Wait for mysqld to really stop. Use the socket and pid files as a
 	// proxy for that since we can't call wait() in a process we
 	// didn't start.
 	if waitForMysqld {
+		log.Infof("Mysqld.Shutdown: waiting for socket file (%v) and pid file (%v) to disappear",
+			mysqld.config.SocketFile, mysqld.config.PidFile)
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -362,12 +376,12 @@ func (mysqld *Mysqld) Shutdown(ctx context.Context, waitForMysqld bool) error {
 			default:
 			}
 
-			_, statErr := os.Stat(mysqld.config.SocketFile)
-			if statErr != nil && os.IsNotExist(statErr) {
+			_, socketPathErr = os.Stat(mysqld.config.SocketFile)
+			_, pidPathErr = os.Stat(mysqld.config.PidFile)
+			if os.IsNotExist(socketPathErr) && os.IsNotExist(pidPathErr) {
 				return nil
 			}
-			log.Infof("Mysqld.Shutdown: sleeping for 1s waiting for socket file %v", mysqld.config.SocketFile)
-			time.Sleep(time.Second)
+			time.Sleep(100 * time.Millisecond)
 		}
 	}
 	return nil
@@ -375,7 +389,7 @@ func (mysqld *Mysqld) Shutdown(ctx context.Context, waitForMysqld bool) error {
 
 // execCmd searches the PATH for a command and runs it, logging the output.
 // If input is not nil, pipe it to the command's stdin.
-func execCmd(name string, args, env []string, dir string, input io.Reader) (cmd *exec.Cmd, err error) {
+func execCmd(name string, args, env []string, dir string, input io.Reader) (cmd *exec.Cmd, output string, err error) {
 	cmdPath, _ := exec.LookPath(name)
 	log.Infof("execCmd: %v %v %v", name, cmdPath, args)
 
@@ -385,12 +399,28 @@ func execCmd(name string, args, env []string, dir string, input io.Reader) (cmd 
 	if input != nil {
 		cmd.Stdin = input
 	}
-	output, err := cmd.CombinedOutput()
+	out, err := cmd.CombinedOutput()
+	output = string(out)
 	if err != nil {
-		err = errors.New(name + ": " + string(output))
+		log.Infof("execCmd: %v failed: %v", name, err)
+		err = fmt.Errorf("%v: %v, output: %v", name, err, output)
 	}
-	log.Infof("execCmd: command returned: %v", string(output))
-	return cmd, err
+	log.Infof("execCmd: %v output: %v", name, output)
+	return cmd, output, err
+}
+
+// binaryPath does a limited path lookup for a command,
+// searching only within sbin and bin in the given root.
+func binaryPath(root, binary string) (string, error) {
+	subdirs := []string{"sbin", "bin"}
+	for _, subdir := range subdirs {
+		binPath := path.Join(root, subdir, binary)
+		if _, err := os.Stat(binPath); err == nil {
+			return binPath, nil
+		}
+	}
+	return "", fmt.Errorf("%s not found in any of %s/{%s}",
+		binary, root, strings.Join(subdirs, ","))
 }
 
 // Init will create the default directory structure for the mysqld process,
@@ -416,24 +446,13 @@ func (mysqld *Mysqld) Init(ctx context.Context, initDBSQLFile string) error {
 	}
 
 	// Install data dir.
-	mysqlRoot, err := vtenv.VtMysqlRoot()
-	if err != nil {
-		log.Errorf("%v", err)
-		return err
-	}
-	log.Infof("Installing data dir with mysql_install_db")
-	args := []string{
-		"--defaults-file=" + mysqld.config.path,
-		"--basedir=" + mysqlRoot,
-	}
-	if _, err = execCmd(path.Join(mysqlRoot, "bin/mysql_install_db"), args, nil, mysqlRoot, nil); err != nil {
-		log.Errorf("mysql_install_db failed: %v", err)
+	if err = mysqld.installDataDir(); err != nil {
 		return err
 	}
 
 	// Start mysqld.
 	if err = mysqld.Start(ctx); err != nil {
-		log.Errorf("failed starting, check %v", mysqld.config.ErrorLogPath)
+		log.Errorf("failed starting mysqld (check %v for more info): %v", mysqld.config.ErrorLogPath, err)
 		return err
 	}
 
@@ -447,6 +466,55 @@ func (mysqld *Mysqld) Init(ctx context.Context, initDBSQLFile string) error {
 		return fmt.Errorf("can't run init_db_sql_file (%v): %v", initDBSQLFile, err)
 	}
 
+	return nil
+}
+
+func (mysqld *Mysqld) installDataDir() error {
+	mysqlRoot, err := vtenv.VtMysqlRoot()
+	if err != nil {
+		return err
+	}
+	mysqldPath, err := binaryPath(mysqlRoot, "mysqld")
+	if err != nil {
+		return err
+	}
+
+	// Check mysqld version.
+	_, version, err := execCmd(mysqldPath, []string{"--version"}, nil, mysqlRoot, nil)
+	if err != nil {
+		return err
+	}
+
+	if strings.Contains(version, "Ver 5.7.") {
+		// MySQL 5.7 GA and up have deprecated mysql_install_db.
+		// Instead, initialization is built into mysqld.
+		log.Infof("Installing data dir with mysqld --initialize-insecure")
+
+		args := []string{
+			"--defaults-file=" + mysqld.config.path,
+			"--basedir=" + mysqlRoot,
+			"--initialize-insecure", // Use empty 'root'@'localhost' password.
+		}
+		if _, _, err = execCmd(mysqldPath, args, nil, mysqlRoot, nil); err != nil {
+			log.Errorf("mysqld --initialize-insecure failed: %v", err)
+			return err
+		}
+		return nil
+	}
+
+	log.Infof("Installing data dir with mysql_install_db")
+	args := []string{
+		"--defaults-file=" + mysqld.config.path,
+		"--basedir=" + mysqlRoot,
+	}
+	cmdPath, err := binaryPath(mysqlRoot, "mysql_install_db")
+	if err != nil {
+		return err
+	}
+	if _, _, err = execCmd(cmdPath, args, nil, mysqlRoot, nil); err != nil {
+		log.Errorf("mysql_install_db failed: %v", err)
+		return err
+	}
 	return nil
 }
 
@@ -481,9 +549,37 @@ func (mysqld *Mysqld) initConfig(root string) error {
 	return ioutil.WriteFile(mysqld.config.path, []byte(configData), 0664)
 }
 
+// ReinitConfig updates the config file as if Mysqld is initializing. At the
+// moment it only randomizes ServerID because it's not safe to restore a replica
+// from a backup and then give it the same ServerID as before, MySQL can then
+// skip transactions in the replication stream with the same server_id.
+func (mysqld *Mysqld) ReinitConfig(ctx context.Context) error {
+	log.Infof("Mysqld.ReinitConfig")
+
+	// Execute as remote action on mysqlctld if requested.
+	if *socketFile != "" {
+		log.Infof("executing Mysqld.ReinitConfig() remotely via mysqlctld server: %v", *socketFile)
+		client, err := mysqlctlclient.New("unix", *socketFile)
+		if err != nil {
+			return fmt.Errorf("can't dial mysqlctld: %v", err)
+		}
+		defer client.Close()
+		return client.ReinitConfig(ctx)
+	}
+
+	if err := mysqld.config.RandomizeMysqlServerID(); err != nil {
+		return err
+	}
+	root, err := vtenv.VtRoot()
+	if err != nil {
+		return err
+	}
+	return mysqld.initConfig(root)
+}
+
 func (mysqld *Mysqld) createDirs() error {
-	log.Infof("creating directory %s", mysqld.TabletDir)
-	if err := os.MkdirAll(mysqld.TabletDir, os.ModePerm); err != nil {
+	log.Infof("creating directory %s", mysqld.tabletDir)
+	if err := os.MkdirAll(mysqld.tabletDir, os.ModePerm); err != nil {
 		return err
 	}
 	for _, dir := range TopLevelDirs() {
@@ -509,19 +605,19 @@ func (mysqld *Mysqld) createDirs() error {
 // /vt/data is present, it will create the following structure:
 // /vt/data/vt_xxxx /vt/vt_xxxx/data -> /vt/data/vt_xxxx
 func (mysqld *Mysqld) createTopDir(dir string) error {
-	vtname := path.Base(mysqld.TabletDir)
+	vtname := path.Base(mysqld.tabletDir)
 	target := path.Join(vtenv.VtDataRoot(), dir)
 	_, err := os.Lstat(target)
 	if err != nil {
 		if os.IsNotExist(err) {
-			topdir := path.Join(mysqld.TabletDir, dir)
+			topdir := path.Join(mysqld.tabletDir, dir)
 			log.Infof("creating directory %s", topdir)
 			return os.MkdirAll(topdir, os.ModePerm)
 		}
 		return err
 	}
 	linkto := path.Join(target, vtname)
-	source := path.Join(mysqld.TabletDir, dir)
+	source := path.Join(mysqld.tabletDir, dir)
 	log.Infof("creating directory %s", linkto)
 	err = os.MkdirAll(linkto, os.ModePerm)
 	if err != nil {
@@ -542,7 +638,7 @@ func (mysqld *Mysqld) Teardown(ctx context.Context, force bool) error {
 	}
 	var removalErr error
 	for _, dir := range TopLevelDirs() {
-		qdir := path.Join(mysqld.TabletDir, dir)
+		qdir := path.Join(mysqld.tabletDir, dir)
 		if err := deleteTopDir(qdir); err != nil {
 			removalErr = err
 		}
@@ -587,12 +683,15 @@ func (mysqld *Mysqld) executeMysqlScript(user string, sql io.Reader) error {
 	if err != nil {
 		return err
 	}
-	name := path.Join(dir, "bin/mysql")
+	name, err := binaryPath(dir, "mysql")
+	if err != nil {
+		return err
+	}
 	arg := []string{"--batch", "-u", user, "-S", mysqld.config.SocketFile}
 	env := []string{
 		"LD_LIBRARY_PATH=" + path.Join(dir, "lib/mysql"),
 	}
-	_, err = execCmd(name, arg, env, dir, sql)
+	_, _, err = execCmd(name, arg, env, dir, sql)
 	if err != nil {
 		return err
 	}
@@ -601,8 +700,8 @@ func (mysqld *Mysqld) executeMysqlScript(user string, sql io.Reader) error {
 
 // GetAppConnection returns a connection from the app pool.
 // Recycle needs to be called on the result.
-func (mysqld *Mysqld) GetAppConnection() (dbconnpool.PoolConnection, error) {
-	return mysqld.appPool.Get(0)
+func (mysqld *Mysqld) GetAppConnection(ctx context.Context) (dbconnpool.PoolConnection, error) {
+	return mysqld.appPool.Get(ctx)
 }
 
 // GetDbaConnection creates a new DBConnection.

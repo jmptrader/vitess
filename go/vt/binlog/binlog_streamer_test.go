@@ -174,10 +174,10 @@ func TestStreamerParseEventsXID(t *testing.T) {
 	events := make(chan replication.BinlogEvent)
 
 	want := []binlogdatapb.BinlogTransaction{
-		binlogdatapb.BinlogTransaction{
+		{
 			Statements: []*binlogdatapb.BinlogTransaction_Statement{
-				{Category: binlogdatapb.BinlogTransaction_Statement_BL_SET, Sql: "SET TIMESTAMP=1407805592"},
-				{Category: binlogdatapb.BinlogTransaction_Statement_BL_DML, Sql: "insert into vt_a(eid, id) values (1, 1) /* _stream vt_a (eid id ) (1 1 ); */"},
+				{Category: binlogdatapb.BinlogTransaction_Statement_BL_SET, Sql: []byte("SET TIMESTAMP=1407805592")},
+				{Category: binlogdatapb.BinlogTransaction_Statement_BL_DML, Sql: []byte("insert into vt_a(eid, id) values (1, 1) /* _stream vt_a (eid id ) (1 1 ); */")},
 			},
 			Timestamp: 1407805592,
 			TransactionId: replication.EncodeGTID(replication.MariadbGTID{
@@ -227,10 +227,10 @@ func TestStreamerParseEventsCommit(t *testing.T) {
 	events := make(chan replication.BinlogEvent)
 
 	want := []binlogdatapb.BinlogTransaction{
-		binlogdatapb.BinlogTransaction{
+		{
 			Statements: []*binlogdatapb.BinlogTransaction_Statement{
-				{Category: binlogdatapb.BinlogTransaction_Statement_BL_SET, Sql: "SET TIMESTAMP=1407805592"},
-				{Category: binlogdatapb.BinlogTransaction_Statement_BL_DML, Sql: "insert into vt_a(eid, id) values (1, 1) /* _stream vt_a (eid id ) (1 1 ); */"},
+				{Category: binlogdatapb.BinlogTransaction_Statement_BL_SET, Sql: []byte("SET TIMESTAMP=1407805592")},
+				{Category: binlogdatapb.BinlogTransaction_Statement_BL_DML, Sql: []byte("insert into vt_a(eid, id) values (1, 1) /* _stream vt_a (eid id ) (1 1 ); */")},
 			},
 			Timestamp: 1407805592,
 			TransactionId: replication.EncodeGTID(replication.MariadbGTID{
@@ -602,7 +602,7 @@ func TestStreamerParseEventsRollback(t *testing.T) {
 	events := make(chan replication.BinlogEvent)
 
 	want := []binlogdatapb.BinlogTransaction{
-		binlogdatapb.BinlogTransaction{
+		{
 			Statements: nil,
 			Timestamp:  1407805592,
 			TransactionId: replication.EncodeGTID(replication.MariadbGTID{
@@ -611,10 +611,10 @@ func TestStreamerParseEventsRollback(t *testing.T) {
 				Sequence: 0x0d,
 			}),
 		},
-		binlogdatapb.BinlogTransaction{
+		{
 			Statements: []*binlogdatapb.BinlogTransaction_Statement{
-				{Category: binlogdatapb.BinlogTransaction_Statement_BL_SET, Sql: "SET TIMESTAMP=1407805592"},
-				{Category: binlogdatapb.BinlogTransaction_Statement_BL_DML, Sql: "insert into vt_a(eid, id) values (1, 1) /* _stream vt_a (eid id ) (1 1 ); */"},
+				{Category: binlogdatapb.BinlogTransaction_Statement_BL_SET, Sql: []byte("SET TIMESTAMP=1407805592")},
+				{Category: binlogdatapb.BinlogTransaction_Statement_BL_DML, Sql: []byte("insert into vt_a(eid, id) values (1, 1) /* _stream vt_a (eid id ) (1 1 ); */")},
 			},
 			Timestamp: 1407805592,
 			TransactionId: replication.EncodeGTID(replication.MariadbGTID{
@@ -659,10 +659,10 @@ func TestStreamerParseEventsDMLWithoutBegin(t *testing.T) {
 	events := make(chan replication.BinlogEvent)
 
 	want := []binlogdatapb.BinlogTransaction{
-		binlogdatapb.BinlogTransaction{
+		{
 			Statements: []*binlogdatapb.BinlogTransaction_Statement{
-				{Category: binlogdatapb.BinlogTransaction_Statement_BL_SET, Sql: "SET TIMESTAMP=1407805592"},
-				{Category: binlogdatapb.BinlogTransaction_Statement_BL_DML, Sql: "insert into vt_a(eid, id) values (1, 1) /* _stream vt_a (eid id ) (1 1 ); */"},
+				{Category: binlogdatapb.BinlogTransaction_Statement_BL_SET, Sql: []byte("SET TIMESTAMP=1407805592")},
+				{Category: binlogdatapb.BinlogTransaction_Statement_BL_DML, Sql: []byte("insert into vt_a(eid, id) values (1, 1) /* _stream vt_a (eid id ) (1 1 ); */")},
 			},
 			Timestamp: 1407805592,
 			TransactionId: replication.EncodeGTID(replication.MariadbGTID{
@@ -671,7 +671,7 @@ func TestStreamerParseEventsDMLWithoutBegin(t *testing.T) {
 				Sequence: 0x0d,
 			}),
 		},
-		binlogdatapb.BinlogTransaction{
+		{
 			Statements: nil,
 			Timestamp:  1407805592,
 			TransactionId: replication.EncodeGTID(replication.MariadbGTID{
@@ -719,10 +719,10 @@ func TestStreamerParseEventsBeginWithoutCommit(t *testing.T) {
 	events := make(chan replication.BinlogEvent)
 
 	want := []binlogdatapb.BinlogTransaction{
-		binlogdatapb.BinlogTransaction{
+		{
 			Statements: []*binlogdatapb.BinlogTransaction_Statement{
-				{Category: binlogdatapb.BinlogTransaction_Statement_BL_SET, Sql: "SET TIMESTAMP=1407805592"},
-				{Category: binlogdatapb.BinlogTransaction_Statement_BL_DML, Sql: "insert into vt_a(eid, id) values (1, 1) /* _stream vt_a (eid id ) (1 1 ); */"},
+				{Category: binlogdatapb.BinlogTransaction_Statement_BL_SET, Sql: []byte("SET TIMESTAMP=1407805592")},
+				{Category: binlogdatapb.BinlogTransaction_Statement_BL_DML, Sql: []byte("insert into vt_a(eid, id) values (1, 1) /* _stream vt_a (eid id ) (1 1 ); */")},
 			},
 			Timestamp: 1407805592,
 			TransactionId: replication.EncodeGTID(replication.MariadbGTID{
@@ -731,7 +731,7 @@ func TestStreamerParseEventsBeginWithoutCommit(t *testing.T) {
 				Sequence: 0x0d,
 			}),
 		},
-		binlogdatapb.BinlogTransaction{
+		{
 			Statements: []*binlogdatapb.BinlogTransaction_Statement{},
 			Timestamp:  1407805592,
 			TransactionId: replication.EncodeGTID(replication.MariadbGTID{
@@ -780,11 +780,11 @@ func TestStreamerParseEventsSetInsertID(t *testing.T) {
 	events := make(chan replication.BinlogEvent)
 
 	want := []binlogdatapb.BinlogTransaction{
-		binlogdatapb.BinlogTransaction{
+		{
 			Statements: []*binlogdatapb.BinlogTransaction_Statement{
-				{Category: binlogdatapb.BinlogTransaction_Statement_BL_SET, Sql: "SET INSERT_ID=101"},
-				{Category: binlogdatapb.BinlogTransaction_Statement_BL_SET, Sql: "SET TIMESTAMP=1407805592"},
-				{Category: binlogdatapb.BinlogTransaction_Statement_BL_DML, Sql: "insert into vt_a(eid, id) values (1, 1) /* _stream vt_a (eid id ) (1 1 ); */"},
+				{Category: binlogdatapb.BinlogTransaction_Statement_BL_SET, Sql: []byte("SET INSERT_ID=101")},
+				{Category: binlogdatapb.BinlogTransaction_Statement_BL_SET, Sql: []byte("SET TIMESTAMP=1407805592")},
+				{Category: binlogdatapb.BinlogTransaction_Statement_BL_DML, Sql: []byte("insert into vt_a(eid, id) values (1, 1) /* _stream vt_a (eid id ) (1 1 ); */")},
 			},
 			Timestamp: 1407805592,
 			TransactionId: replication.EncodeGTID(replication.MariadbGTID{
@@ -873,10 +873,10 @@ func TestStreamerParseEventsOtherDB(t *testing.T) {
 	events := make(chan replication.BinlogEvent)
 
 	want := []binlogdatapb.BinlogTransaction{
-		binlogdatapb.BinlogTransaction{
+		{
 			Statements: []*binlogdatapb.BinlogTransaction_Statement{
-				{Category: binlogdatapb.BinlogTransaction_Statement_BL_SET, Sql: "SET TIMESTAMP=1407805592"},
-				{Category: binlogdatapb.BinlogTransaction_Statement_BL_DML, Sql: "insert into vt_a(eid, id) values (1, 1) /* _stream vt_a (eid id ) (1 1 ); */"},
+				{Category: binlogdatapb.BinlogTransaction_Statement_BL_SET, Sql: []byte("SET TIMESTAMP=1407805592")},
+				{Category: binlogdatapb.BinlogTransaction_Statement_BL_DML, Sql: []byte("insert into vt_a(eid, id) values (1, 1) /* _stream vt_a (eid id ) (1 1 ); */")},
 			},
 			Timestamp: 1407805592,
 			TransactionId: replication.EncodeGTID(replication.MariadbGTID{
@@ -927,10 +927,10 @@ func TestStreamerParseEventsOtherDBBegin(t *testing.T) {
 	events := make(chan replication.BinlogEvent)
 
 	want := []binlogdatapb.BinlogTransaction{
-		binlogdatapb.BinlogTransaction{
+		{
 			Statements: []*binlogdatapb.BinlogTransaction_Statement{
-				{Category: binlogdatapb.BinlogTransaction_Statement_BL_SET, Sql: "SET TIMESTAMP=1407805592"},
-				{Category: binlogdatapb.BinlogTransaction_Statement_BL_DML, Sql: "insert into vt_a(eid, id) values (1, 1) /* _stream vt_a (eid id ) (1 1 ); */"},
+				{Category: binlogdatapb.BinlogTransaction_Statement_BL_SET, Sql: []byte("SET TIMESTAMP=1407805592")},
+				{Category: binlogdatapb.BinlogTransaction_Statement_BL_DML, Sql: []byte("insert into vt_a(eid, id) values (1, 1) /* _stream vt_a (eid id ) (1 1 ); */")},
 			},
 			Timestamp: 1407805592,
 			TransactionId: replication.EncodeGTID(replication.MariadbGTID{
@@ -1012,10 +1012,10 @@ func TestStreamerParseEventsMariadbBeginGTID(t *testing.T) {
 	events := make(chan replication.BinlogEvent)
 
 	want := []binlogdatapb.BinlogTransaction{
-		binlogdatapb.BinlogTransaction{
+		{
 			Statements: []*binlogdatapb.BinlogTransaction_Statement{
-				{Category: binlogdatapb.BinlogTransaction_Statement_BL_SET, Charset: charset, Sql: "SET TIMESTAMP=1409892744"},
-				{Category: binlogdatapb.BinlogTransaction_Statement_BL_DML, Charset: charset, Sql: "insert into vt_insert_test(msg) values ('test 0') /* _stream vt_insert_test (id ) (null ); */"},
+				{Category: binlogdatapb.BinlogTransaction_Statement_BL_SET, Charset: charset, Sql: []byte("SET TIMESTAMP=1409892744")},
+				{Category: binlogdatapb.BinlogTransaction_Statement_BL_DML, Charset: charset, Sql: []byte("insert into vt_insert_test(msg) values ('test 0') /* _stream vt_insert_test (id ) (null ); */")},
 			},
 			Timestamp: 1409892744,
 			TransactionId: replication.EncodeGTID(replication.MariadbGTID{
@@ -1058,10 +1058,10 @@ func TestStreamerParseEventsMariadbStandaloneGTID(t *testing.T) {
 	events := make(chan replication.BinlogEvent)
 
 	want := []binlogdatapb.BinlogTransaction{
-		binlogdatapb.BinlogTransaction{
+		{
 			Statements: []*binlogdatapb.BinlogTransaction_Statement{
-				{Category: binlogdatapb.BinlogTransaction_Statement_BL_SET, Charset: &binlogdatapb.Charset{Client: 8, Conn: 8, Server: 33}, Sql: "SET TIMESTAMP=1409892744"},
-				{Category: binlogdatapb.BinlogTransaction_Statement_BL_DDL, Charset: &binlogdatapb.Charset{Client: 8, Conn: 8, Server: 33}, Sql: "create table if not exists vt_insert_test (\nid bigint auto_increment,\nmsg varchar(64),\nprimary key (id)\n) Engine=InnoDB"},
+				{Category: binlogdatapb.BinlogTransaction_Statement_BL_SET, Charset: &binlogdatapb.Charset{Client: 8, Conn: 8, Server: 33}, Sql: []byte("SET TIMESTAMP=1409892744")},
+				{Category: binlogdatapb.BinlogTransaction_Statement_BL_DDL, Charset: &binlogdatapb.Charset{Client: 8, Conn: 8, Server: 33}, Sql: []byte("create table if not exists vt_insert_test (\nid bigint auto_increment,\nmsg varchar(64),\nprimary key (id)\n) Engine=InnoDB")},
 			},
 			Timestamp: 1409892744,
 			TransactionId: replication.EncodeGTID(replication.MariadbGTID{

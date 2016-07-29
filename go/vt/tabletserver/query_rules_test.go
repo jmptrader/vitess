@@ -16,6 +16,7 @@ import (
 	"github.com/youtube/vitess/go/vt/tabletserver/planbuilder"
 
 	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
 )
 
 func TestQueryRules(t *testing.T) {
@@ -98,7 +99,7 @@ func TestFilterByPlan(t *testing.T) {
 
 	qr2 := NewQueryRule("rule 2", "r2", QRFail)
 	qr2.AddPlanCond(planbuilder.PlanPassSelect)
-	qr2.AddPlanCond(planbuilder.PlanPKIn)
+	qr2.AddPlanCond(planbuilder.PlanSelectLock)
 	qr2.AddBindVarCond("a", true, false, QRNoOp, nil)
 
 	qr3 := NewQueryRule("rule 3", "r3", QRFail)
@@ -165,7 +166,7 @@ func TestFilterByPlan(t *testing.T) {
 		t.Errorf("qrs1:\n%s, want\n%s", got, want)
 	}
 
-	qrs1 = qrs.filterByPlan("insert", planbuilder.PlanPKIn, "a")
+	qrs1 = qrs.filterByPlan("insert", planbuilder.PlanSelectLock, "a")
 	got = marshalled(qrs1)
 	if got != want {
 		t.Errorf("qrs1:\n%s, want\n%s", got, want)
@@ -731,7 +732,7 @@ func TestInvalidJSON(t *testing.T) {
 			t.Errorf("want error for case %q", tcase.input)
 			continue
 		}
-		recvd := strings.Replace(err.Error(), "error: ", "", 1)
+		recvd := strings.Replace(err.Error(), "fatal: ", "", 1)
 		if recvd != tcase.err {
 			t.Errorf("invalid json: %s, want '%v', got '%v'", tcase.input, tcase.err, recvd)
 		}
@@ -742,8 +743,8 @@ func TestInvalidJSON(t *testing.T) {
 	if !ok {
 		t.Fatalf("invalid json, should get a tablet error")
 	}
-	if terr.ErrorType != ErrFail {
-		t.Fatalf("should get ErrFail")
+	if terr.ErrorCode != vtrpcpb.ErrorCode_INTERNAL_ERROR {
+		t.Fatalf("got: %v wanted: INTERNAL_ERROR", terr.ErrorCode)
 	}
 }
 
@@ -772,7 +773,7 @@ func TestBuildQueryRuleFailureModes(t *testing.T) {
 	if err == nil {
 		t.Fatalf("should get an error")
 	}
-	errStr = strings.Replace(err.Error(), "error: ", "", 1)
+	errStr = strings.Replace(err.Error(), "fatal: ", "", 1)
 	if errStr != "want string for Operator" {
 		t.Fatalf("expect to get error: want string for Operator, but got: %v", err)
 	}
@@ -783,7 +784,7 @@ func TestBuildQueryRuleFailureModes(t *testing.T) {
 	if err == nil {
 		t.Fatalf("should get an error")
 	}
-	errStr = strings.Replace(err.Error(), "error: ", "", 1)
+	errStr = strings.Replace(err.Error(), "fatal: ", "", 1)
 	if errStr != "want keyrange for Value" {
 		t.Fatalf("expect to get error: want keyrange for Value, but got: %v", err)
 	}
@@ -794,7 +795,7 @@ func TestBuildQueryRuleFailureModes(t *testing.T) {
 	if err == nil {
 		t.Fatalf("should get an error")
 	}
-	errStr = strings.Replace(err.Error(), "error: ", "", 1)
+	errStr = strings.Replace(err.Error(), "fatal: ", "", 1)
 	if errStr != "Start missing in KeyRange" {
 		t.Fatalf("expect to get error: Start missing in KeyRange, but got: %v", err)
 	}
@@ -805,7 +806,7 @@ func TestBuildQueryRuleFailureModes(t *testing.T) {
 	if err == nil {
 		t.Fatalf("should get an error")
 	}
-	errStr = strings.Replace(err.Error(), "error: ", "", 1)
+	errStr = strings.Replace(err.Error(), "fatal: ", "", 1)
 	if errStr != "want string for Start" {
 		t.Fatalf("expect to get error: want string for Start, but got: %v", err)
 	}
@@ -816,7 +817,7 @@ func TestBuildQueryRuleFailureModes(t *testing.T) {
 	if err == nil {
 		t.Fatalf("should get an error")
 	}
-	errStr = strings.Replace(err.Error(), "error: ", "", 1)
+	errStr = strings.Replace(err.Error(), "fatal: ", "", 1)
 	if errStr != "End missing in KeyRange" {
 		t.Fatalf("expect to get error: End missing in KeyRange, but got: %v", err)
 	}
@@ -827,7 +828,7 @@ func TestBuildQueryRuleFailureModes(t *testing.T) {
 	if err == nil {
 		t.Fatalf("should get an error")
 	}
-	errStr = strings.Replace(err.Error(), "error: ", "", 1)
+	errStr = strings.Replace(err.Error(), "fatal: ", "", 1)
 	if errStr != "want string for End" {
 		t.Fatalf("expect to get error: want string for End, but got: %v", err)
 	}
@@ -838,7 +839,7 @@ func TestBuildQueryRuleFailureModes(t *testing.T) {
 	if err == nil {
 		t.Fatalf("should get an error")
 	}
-	errStr = strings.Replace(err.Error(), "error: ", "", 1)
+	errStr = strings.Replace(err.Error(), "fatal: ", "", 1)
 	if errStr != "want bool for OnMismatch" {
 		t.Fatalf("expect to get error: want bool for OnMismatch, but got: %v", err)
 	}

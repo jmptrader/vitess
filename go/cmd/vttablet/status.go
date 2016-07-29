@@ -8,6 +8,7 @@ import (
 	_ "github.com/youtube/vitess/go/vt/status"
 	"github.com/youtube/vitess/go/vt/tabletmanager"
 	"github.com/youtube/vitess/go/vt/tabletserver"
+	"github.com/youtube/vitess/go/vt/topo"
 )
 
 var (
@@ -39,14 +40,17 @@ var (
   <tr border="">
     <td width="25%" border="">
       Alias: {{github_com_youtube_vitess_vtctld_tablet .Tablet.AliasString}}<br>
-      Keyspace: {{github_com_youtube_vitess_vtctld_keyspace .Tablet.Keyspace}} Shard: {{github_com_youtube_vitess_vtctld_shard .Tablet.Keyspace .Tablet.Shard}}<br>
-      Serving graph: {{github_com_youtube_vitess_vtctld_srv_keyspace .Tablet.Alias.Cell .Tablet.Keyspace}} {{github_com_youtube_vitess_vtctld_srv_shard .Tablet.Alias.Cell .Tablet.Keyspace .Tablet.Shard}} {{github_com_youtube_vitess_vtctld_srv_type .Tablet.Alias.Cell .Tablet.Keyspace .Tablet.Shard .Tablet.Type}}<br>
+      Keyspace: {{github_com_youtube_vitess_vtctld_keyspace .Tablet.Keyspace}} Shard: {{github_com_youtube_vitess_vtctld_shard .Tablet.Keyspace .Tablet.Shard}} Tablet Type: {{.Tablet.Type}}<br>
+      SrvKeyspace: {{github_com_youtube_vitess_vtctld_srv_keyspace .Tablet.Alias.Cell .Tablet.Keyspace}}<br>
       Replication graph: {{github_com_youtube_vitess_vtctld_replication .Tablet.Alias.Cell .Tablet.Keyspace .Tablet.Shard}}<br>
       {{if .BlacklistedTables}}
         BlacklistedTables: {{range .BlacklistedTables}}{{.}} {{end}}<br>
       {{end}}
-      {{if .DisableQueryService}}
-        Query Service disabled by TabletControl<br>
+      {{if .DisallowQueryService}}
+        Query Service disabled: {{.DisallowQueryService}}<br>
+      {{end}}
+      {{if .DisableUpdateStream}}
+        Update Stream disabled<br>
       {{end}}
     </td>
     <td width="25%" border="">
@@ -64,7 +68,6 @@ var (
     <td width="25%" border="">
       <a href="/healthz">Health Check</a></br>
       <a href="/debug/health">Query Service Health Check</a></br>
-      <a href="/debug/memcache/">Memcache</a></br>
       <a href="/streamqueryz">Current Stream Queries</a></br>
     </td>
   </tr>
@@ -172,22 +175,21 @@ var onStatusRegistered func()
 func addStatusParts(qsc tabletserver.Controller) {
 	servenv.AddStatusPart("Tablet", tabletTemplate, func() interface{} {
 		return map[string]interface{}{
-			"Tablet":              agent.Tablet(),
-			"BlacklistedTables":   agent.BlacklistedTables(),
-			"DisableQueryService": agent.DisableQueryService(),
+			"Tablet":               topo.NewTabletInfo(agent.Tablet(), -1),
+			"BlacklistedTables":    agent.BlacklistedTables(),
+			"DisallowQueryService": agent.DisallowQueryService(),
+			"DisableUpdateStream":  !agent.EnableUpdateStream(),
 		}
 	})
-	if agent.IsRunningHealthCheck() {
-		servenv.AddStatusFuncs(template.FuncMap{
-			"github_com_youtube_vitess_health_html_name": healthHTMLName,
-		})
-		servenv.AddStatusPart("Health", healthTemplate, func() interface{} {
-			return &healthStatus{
-				Records: agent.History.Records(),
-				Config:  tabletmanager.ConfigHTML(),
-			}
-		})
-	}
+	servenv.AddStatusFuncs(template.FuncMap{
+		"github_com_youtube_vitess_health_html_name": healthHTMLName,
+	})
+	servenv.AddStatusPart("Health", healthTemplate, func() interface{} {
+		return &healthStatus{
+			Records: agent.History.Records(),
+			Config:  tabletmanager.ConfigHTML(),
+		}
+	})
 	qsc.AddStatusPart()
 	servenv.AddStatusPart("Binlog Player", binlogTemplate, func() interface{} {
 		return agent.BinlogPlayerMap.Status()

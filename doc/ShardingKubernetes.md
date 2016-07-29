@@ -12,7 +12,7 @@ have left the cluster running.
 
 We will follow a process similar to the one in the general
 [Horizontal Sharding](http://vitess.io/user-guide/horizontal-sharding.html)
-guide, except that here we'll give the exact commands you'll need to do it for
+guide, except that here we'll give the commands you'll need to do it for
 the example Vitess cluster in Kubernetes.
 
 Since Vitess makes [sharding](http://vitess.io/user-guide/sharding.html)
@@ -24,26 +24,39 @@ confirming that the Vitess cluster continues to serve without downtime.
 
 ## Configure sharding information
 
-The first step is to tell Vitess the name and type of our
-[keyspace_id](http://vitess.io/overview/concepts.html#keyspace-id) column:
+The first step is to tell Vitess how we want to partition the data.
+We do this by providing a VSchema definition as follows:
 
-``` sh
-vitess/examples/kubernetes$ ./kvtctl.sh SetKeyspaceShardingInfo test_keyspace keyspace_id uint64
+``` json
+{
+  "Sharded": true,
+  "Vindexes": {
+    "hash": {
+      "Type": "hash"
+    }
+  },
+  "Tables": {
+    "messages": {
+      "ColVindexes": [
+        {
+          "Col": "page",
+          "Name": "hash"
+        }
+      ]
+    }
+  }
+}
 ```
 
-This column was added in the original
-[schema](https://github.com/youtube/vitess/blob/master/examples/kubernetes/create_test_table.sql)
-for the unsharded example, although it was unnecessary there.
-As a result, the Guestbook app is already sharding-ready,
-so we don't need to change anything at the app layer to shard the database.
+This says that we want to shard the data by a hash of the `page` column.
+In other words, keep each page's messages together, but spread pages around
+the shards randomly.
 
-If the app hadn't originally been sharding-ready, we would need to alter
-the tables to add the *keyspace_id* column, back-fill it with a suitable hash
-of the sharding key, and include the *keyspace_id* in each query sent to VTGate.
+We can load this VSchema into Vitess like this:
 
-See the [sharding guide](http://vitess.io/user-guide/sharding.html#range-based-sharding)
-and the [Guestbook source](https://github.com/youtube/vitess/blob/master/examples/kubernetes/guestbook/main.py)
-for more about how this column is used.
+``` sh
+vitess/examples/kubernetes$ ./kvtctl.sh ApplyVSchema -vschema "$(cat vschema.json)" test_keyspace
+```
 
 ## Bring up tablets for new shards
 
@@ -105,21 +118,21 @@ vitess/examples/kubernetes$ ./kvtctl.sh CopySchemaShard test_keyspace/0 test_key
 ```
 
 Next we copy the data. Since the amount of data to copy can be very large,
-we use a special batch process called `vtworker` to stream the data from a
+we use a special batch process called *vtworker* to stream the data from a
 single source to multiple destinations, routing each row based on its
 *keyspace_id*:
 
 ``` sh
-vitess/examples/kubernetes$ ./sharded-vtworker.sh SplitClone --strategy=-populate_blp_checkpoint test_keyspace/0
+vitess/examples/kubernetes$ ./sharded-vtworker.sh SplitClone test_keyspace/0
 ### example output:
 # Creating vtworker pod in cell test...
 # pods/vtworker
 # Following vtworker logs until termination...
-# I0627 23:57:51.118768      10 vtworker.go:99] Starting worker...
+# I0416 02:08:59.952805       9 instance.go:115] Starting worker...
 # ...
 # State: done
 # Success:
-# messages: copy done, copied 3 rows
+# messages: copy done, copied 11 rows
 # Deleting vtworker pod...
 # pods/vtworker
 ```
@@ -139,7 +152,7 @@ will be served only by the remaining, un-paused *rdonly* tablets.
 
 ## Check filtered replication
 
-Once the copy from the paused snapshot finishes, `vtworker` turns on
+Once the copy from the paused snapshot finishes, *vtworker* turns on
 [filtered replication](http://vitess.io/user-guide/sharding.html#filtered-replication)
 from the source shard to each destination shard. This allows the destination
 shards to catch up on updates that have continued to flow in from the app since
@@ -164,7 +177,7 @@ Add some messages on various pages of the Guestbook to see how they get routed.
 
 ## Check copied data integrity
 
-The `vtworker` batch process has another mode that will compare the source
+The *vtworker* batch process has another mode that will compare the source
 and destination to ensure all the data is present and correct.
 The following commands will run a diff for each destination shard:
 
@@ -177,7 +190,7 @@ If any discrepancies are found, they will be printed.
 If everything is good, you should see something like this:
 
 ```
-Table messages checks out (4 rows processed, 1072961 qps)
+I0416 02:10:56.927313      10 split_diff.go:496] Table messages checks out (4 rows processed, 1072961 qps)
 ```
 
 ## Switch over to new shards
@@ -226,7 +239,6 @@ unsharded example:
 ``` sh
 vitess/examples/kubernetes$ ./vttablet-down.sh
 ### example output:
-# Removing tablet test-0000000100 from Vitess topology...
 # Deleting pod for tablet test-0000000100...
 # pods/vttablet-100
 # ...
@@ -235,7 +247,7 @@ vitess/examples/kubernetes$ ./vttablet-down.sh
 Then we can delete the now-empty shard:
 
 ``` sh
-vitess/examples/kubernetes$ ./kvtctl.sh DeleteShard test_keyspace/0
+vitess/examples/kubernetes$ ./kvtctl.sh DeleteShard -recursive test_keyspace/0
 ```
 
 You should then see in the vtctld **Topology** page, or in the output of

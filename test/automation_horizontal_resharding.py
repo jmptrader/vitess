@@ -5,6 +5,12 @@
 # be found in the LICENSE file.
 """End-to-end test for horizontal resharding automation."""
 
+# "unittest" is used indirectly by importing "worker", but pylint does
+# not grasp this.
+# Import it explicitly to make pylint happy and stop it complaining about
+# setUpModule, tearDownModule and the missing module docstring.
+import unittest  # pylint: disable=unused-import
+
 import environment
 import utils
 import worker
@@ -51,7 +57,8 @@ class TestAutomationHorizontalResharding(worker.TestBaseSplitClone):
         ' --param source_shard_list=' + source_shard_list +
         ' --param dest_shard_list=' + dest_shard_list +
         ' --param vtctld_endpoint=' + vtctld_endpoint +
-        ' --param vtworker_endpoint=' + vtworker_endpoint)
+        ' --param vtworker_endpoint=' + vtworker_endpoint +
+        ' --param min_healthy_rdonly_tablets=1')
 
     self.verify()
 
@@ -91,8 +98,7 @@ class TestAutomationHorizontalResharding(worker.TestBaseSplitClone):
     #   (immediately after SplitDiff returned)
     # - SERVING, DisableQueryService=false, tablet type 'rdonly'
     #   (during healthcheck before post-action callback is called)
-    utils.run_vtctl(['RunHealthCheck', worker.shard_rdonly1.tablet_alias,
-                     'rdonly'],
+    utils.run_vtctl(['RunHealthCheck', worker.shard_rdonly1.tablet_alias],
                     auto_log=True)
 
     # source shard: query service must be disabled after MigrateServedTypes.
@@ -108,8 +114,7 @@ class TestAutomationHorizontalResharding(worker.TestBaseSplitClone):
 
     # dest shard -80: query service must be disabled after MigrateServedTypes.
     # Run explicit healthcheck because 'rdonly' tablet may still be 'spare'.
-    utils.run_vtctl(['RunHealthCheck', worker.shard_0_rdonly1.tablet_alias,
-                     'rdonly'],
+    utils.run_vtctl(['RunHealthCheck', worker.shard_0_rdonly1.tablet_alias],
                     auto_log=True)
     utils.check_tablet_query_service(
         self, worker.shard_0_rdonly1,
@@ -123,8 +128,7 @@ class TestAutomationHorizontalResharding(worker.TestBaseSplitClone):
 
     # dest shard 80-: query service must be disabled after MigrateServedTypes.
     # Run explicit healthcheck because 'rdonly' tablet is still 'spare'.
-    utils.run_vtctl(['RunHealthCheck', worker.shard_1_rdonly1.tablet_alias,
-                     'rdonly'],
+    utils.run_vtctl(['RunHealthCheck', worker.shard_1_rdonly1.tablet_alias],
                     auto_log=True)
     utils.check_tablet_query_service(
         self, worker.shard_1_rdonly1,

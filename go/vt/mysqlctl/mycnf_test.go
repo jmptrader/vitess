@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path"
+	"strings"
 	"testing"
 
 	"github.com/youtube/vitess/go/vt/dbconfigs"
@@ -21,7 +22,11 @@ func TestMycnf(t *testing.T) {
 	dbaConfig := dbconfigs.DefaultDBConfigs.Dba
 	appConfig := dbconfigs.DefaultDBConfigs.App.ConnParams
 	replConfig := dbconfigs.DefaultDBConfigs.Repl
-	tablet0 := NewMysqld("Dba", "App", NewMycnf(0, 6802), &dbaConfig, &appConfig, &replConfig)
+	cnf := NewMycnf(11111, 6802)
+	// Assigning ServerID to be different from tablet UID to make sure that there are no
+	// assumptions in the code that those IDs are the same.
+	cnf.ServerID = 22222
+	tablet0 := NewMysqld("Dba", "App", cnf, &dbaConfig, &appConfig, &replConfig)
 	defer tablet0.Close()
 	root, err := env.VtRoot()
 	if err != nil {
@@ -52,5 +57,13 @@ func TestMycnf(t *testing.T) {
 		t.Errorf("failed reading, err %v", err)
 	} else {
 		t.Logf("socket file %v", mycnf.SocketFile)
+	}
+	// Tablet UID should be 11111, which determines tablet/data dir.
+	if got, want := mycnf.DataDir, "/vt_0000011111/"; !strings.Contains(got, want) {
+		t.Errorf("mycnf.DataDir = %v, want *%v*", got, want)
+	}
+	// MySQL server-id should be 22222, different from Tablet UID.
+	if got, want := mycnf.ServerID, uint32(22222); got != want {
+		t.Errorf("mycnf.ServerID = %v, want %v", got, want)
 	}
 }

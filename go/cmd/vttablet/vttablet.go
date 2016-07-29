@@ -23,15 +23,12 @@ import (
 
 	// import mysql to register mysql connection function
 	_ "github.com/youtube/vitess/go/mysql"
-	// import memcache to register memcache connection function
-	_ "github.com/youtube/vitess/go/memcache"
 )
 
 var (
 	enforceTableACLConfig = flag.Bool("enforce-tableacl-config", false, "if this flag is true, vttablet will fail to start if a valid tableacl config does not exist")
 	tableAclConfig        = flag.String("table-acl-config", "", "path to table access checker config file")
 	tabletPath            = flag.String("tablet-path", "", "tablet alias")
-	overridesFile         = flag.String("schema-override", "", "schema overrides file")
 
 	agent *tabletmanager.ActionAgent
 )
@@ -80,7 +77,15 @@ func main() {
 
 	// creates and registers the query service
 	qsc := tabletserver.NewServer()
-	qsc.Register()
+	servenv.OnRun(func() {
+		qsc.Register()
+		addStatusParts(qsc)
+	})
+	servenv.OnClose(func() {
+		// We now leave the queryservice running during lameduck,
+		// so stop it in OnClose(), after lameduck is over.
+		qsc.StopService()
+	})
 
 	if *tableAclConfig != "" {
 		// To override default simpleacl, other ACL plugins must set themselves to be default ACL factory
@@ -108,26 +113,19 @@ func main() {
 	// before initializing the agent, so the initial health check
 	// done by the agent has the right reporter)
 	mysqld := mysqlctl.NewMysqld("Dba", "App", mycnf, &dbcfgs.Dba, &dbcfgs.App.ConnParams, &dbcfgs.Repl)
-	registerHealthReporter(mysqld)
+	servenv.OnClose(mysqld.Close)
 
 	// Depends on both query and updateStream.
 	gRPCPort := int32(0)
 	if servenv.GRPCPort != nil {
 		gRPCPort = int32(*servenv.GRPCPort)
 	}
-	agent, err = tabletmanager.NewActionAgent(context.Background(), mysqld, qsc, tabletAlias, dbcfgs, mycnf, int32(*servenv.Port), gRPCPort, *overridesFile)
+	agent, err = tabletmanager.NewActionAgent(context.Background(), mysqld, qsc, tabletAlias, dbcfgs, mycnf, int32(*servenv.Port), gRPCPort)
 	if err != nil {
 		log.Error(err)
 		exit.Return(1)
 	}
 
-	servenv.OnRun(func() {
-		addStatusParts(qsc)
-	})
-	servenv.OnTerm(func() {
-		qsc.StopService()
-		agent.Stop()
-	})
 	servenv.OnClose(func() {
 		// We will still use the topo server during lameduck period
 		// to update our state, so closing it in OnClose()

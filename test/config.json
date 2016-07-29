@@ -9,6 +9,15 @@
 			"RetryMax": 0,
 			"Tags": []
 		},
+		"automation_vertical_split": {
+			"File": "automation_vertical_split.py",
+			"Args": [],
+			"Command": [],
+			"Manual": false,
+			"Shard": 3,
+			"RetryMax": 0,
+			"Tags": []
+		},
 		"backup": {
 			"File": "backup.py",
 			"Args": [],
@@ -36,6 +45,26 @@
 			"Manual": false,
 			"Shard": 4,
 			"RetryMax": 0,
+			"Tags": [
+				"worker_test"
+			]
+		},
+		"encrypted_replication": {
+			"File": "encrypted_replication.py",
+			"Args": [],
+			"Command": [],
+			"Manual": false,
+			"Shard": 4,
+			"RetryMax": 0,
+			"Tags": []
+		},
+		"encrypted_transport": {
+			"File": "encrypted_transport.py",
+			"Args": [],
+			"Command": [],
+			"Manual": false,
+			"Shard": 4,
+			"RetryMax": 0,
 			"Tags": []
 		},
 		"goveralls": {
@@ -54,7 +83,7 @@
 			"Args": [],
 			"Command": [],
 			"Manual": false,
-			"Shard": 2,
+			"Shard": 3,
 			"RetryMax": 0,
 			"Tags": [
 				"worker_test"
@@ -65,7 +94,51 @@
 			"Args": [],
 			"Command": [],
 			"Manual": false,
+			"Shard": 4,
+			"RetryMax": 0,
+			"Tags": [
+				"worker_test"
+			]
+		},
+		"initial_sharding_l2vtgate": {
+			"File": "initial_sharding_l2vtgate.py",
+			"Args": [],
+			"Command": [],
+			"Manual": false,
+			"Shard": 2,
+			"RetryMax": 0,
+			"Tags": [
+				"worker_test"
+			]
+		},
+		"legacy_resharding": {
+			"File": "legacy_resharding.py",
+			"Args": [],
+			"Command": [],
+			"Manual": false,
+			"Shard": 1,
+			"RetryMax": 0,
+			"Tags": [
+				"worker_test"
+			]
+		},
+		"merge_sharding": {
+			"File": "merge_sharding.py",
+			"Args": [],
+			"Command": [],
+			"Manual": false,
 			"Shard": 3,
+			"RetryMax": 0,
+			"Tags": [
+				"worker_test"
+			]
+		},
+		"merge_sharding_bytes": {
+			"File": "merge_sharding_bytes.py",
+			"Args": [],
+			"Command": [],
+			"Manual": false,
+			"Shard": 4,
 			"RetryMax": 0,
 			"Tags": [
 				"worker_test"
@@ -79,7 +152,7 @@
 				"java_test"
 			],
 			"Manual": false,
-			"Shard": 1,
+			"Shard": 3,
 			"RetryMax": 0,
 			"Tags": []
 		},
@@ -90,7 +163,7 @@
 				"test/keyrange_test.py"
 			],
 			"Manual": false,
-			"Shard": 3,
+			"Shard": 4,
 			"RetryMax": 0,
 			"Tags": [
 				"site_test"
@@ -114,7 +187,16 @@
 				"test/local_example.sh"
 			],
 			"Manual": false,
-			"Shard": 0,
+			"Shard": 2,
+			"RetryMax": 0,
+			"Tags": []
+		},
+		"master_buffering": {
+			"File": "master_buffering_test.py",
+			"Args": [],
+			"Command": [],
+			"Manual": false,
+			"Shard": 4,
 			"RetryMax": 0,
 			"Tags": []
 		},
@@ -146,7 +228,7 @@
 			"Args": [],
 			"Command": [],
 			"Manual": false,
-			"Shard": 2,
+			"Shard": 0,
 			"RetryMax": 0,
 			"Tags": []
 		},
@@ -155,7 +237,7 @@
 			"Args": [],
 			"Command": [],
 			"Manual": false,
-			"Shard": 4,
+			"Shard": 2,
 			"RetryMax": 0,
 			"Tags": []
 		},
@@ -164,7 +246,7 @@
 			"Args": [],
 			"Command": [],
 			"Manual": false,
-			"Shard": 2,
+			"Shard": 3,
 			"RetryMax": 0,
 			"Tags": [
 				"worker_test"
@@ -175,32 +257,14 @@
 			"Args": [],
 			"Command": [],
 			"Manual": false,
-			"Shard": 2,
+			"Shard": 0,
 			"RetryMax": 0,
 			"Tags": [
 				"worker_test"
 			]
 		},
-		"rowcache_invalidator": {
-			"File": "rowcache_invalidator.py",
-			"Args": [],
-			"Command": [],
-			"Manual": false,
-			"Shard": 4,
-			"RetryMax": 0,
-			"Tags": []
-		},
 		"schema": {
 			"File": "schema.py",
-			"Args": [],
-			"Command": [],
-			"Manual": false,
-			"Shard": 4,
-			"RetryMax": 0,
-			"Tags": []
-		},
-		"secure": {
-			"File": "secure.py",
 			"Args": [],
 			"Command": [],
 			"Manual": false,
@@ -213,7 +277,7 @@
 			"Args": [],
 			"Command": [],
 			"Manual": false,
-			"Shard": 0,
+			"Shard": 4,
 			"RetryMax": 0,
 			"Tags": []
 		},
@@ -224,7 +288,7 @@
 				"test/sql_builder_test.py"
 			],
 			"Manual": false,
-			"Shard": 2,
+			"Shard": 3,
 			"RetryMax": 0,
 			"Tags": []
 		},
@@ -246,7 +310,7 @@
 				"tools/unit_test_runner.sh"
 			],
 			"Manual": false,
-			"Shard": 0,
+			"Shard": 1,
 			"RetryMax": 1,
 			"Tags": []
 		},
@@ -258,7 +322,7 @@
 				"unit_test_race"
 			],
 			"Manual": false,
-			"Shard": 3,
+			"Shard": 4,
 			"RetryMax": 0,
 			"Tags": []
 		},
@@ -276,7 +340,7 @@
 			"Args": [],
 			"Command": [],
 			"Manual": false,
-			"Shard": 3,
+			"Shard": 1,
 			"RetryMax": 0,
 			"Tags": [
 				"worker_test"
@@ -291,6 +355,17 @@
 			"RetryMax": 0,
 			"Tags": []
 		},
+		"vtctld_web": {
+			"File": "vtctld_web_test.py",
+			"Args": [],
+			"Command": [],
+			"Manual": false,
+			"Shard": 4,
+			"RetryMax": 0,
+			"Tags": [
+				"webdriver"
+			]
+		},
 		"vtgate_utils": {
 			"File": "vtgate_utils_test.py",
 			"Args": [],
@@ -302,6 +377,17 @@
 		},
 		"vtgatev2": {
 			"File": "vtgatev2_test.py",
+			"Args": [],
+			"Command": [],
+			"Manual": false,
+			"Shard": 2,
+			"RetryMax": 0,
+			"Tags": [
+				"site_test"
+			]
+		},
+		"vtgatev2_l2vtgate": {
+			"File": "vtgatev2_l2vtgate_test.py",
 			"Args": [],
 			"Command": [],
 			"Manual": false,
@@ -325,7 +411,7 @@
 			"Args": [],
 			"Command": [],
 			"Manual": false,
-			"Shard": 1,
+			"Shard": 2,
 			"RetryMax": 0,
 			"Tags": []
 		},

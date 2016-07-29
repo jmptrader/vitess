@@ -21,12 +21,12 @@ import (
 
 // GetPermissions returns the permissions set on a remote tablet
 func (wr *Wrangler) GetPermissions(ctx context.Context, tabletAlias *topodatapb.TabletAlias) (*tabletmanagerdatapb.Permissions, error) {
-	tablet, err := wr.ts.GetTablet(ctx, tabletAlias)
+	ti, err := wr.ts.GetTablet(ctx, tabletAlias)
 	if err != nil {
 		return nil, err
 	}
 
-	return wr.tmc.GetPermissions(ctx, tablet)
+	return wr.tmc.GetPermissions(ctx, ti.Tablet)
 }
 
 // diffPermissions is a helper method to asynchronously diff a permissions
@@ -80,7 +80,7 @@ func (wr *Wrangler) ValidatePermissionsShard(ctx context.Context, keyspace, shar
 	}
 	wg.Wait()
 	if er.HasErrors() {
-		return fmt.Errorf("Permissions diffs:\n%v", er.Error().Error())
+		return fmt.Errorf("Permissions diffs: %v", er.Error().Error())
 	}
 	return nil
 }
@@ -139,7 +139,7 @@ func (wr *Wrangler) ValidatePermissionsKeyspace(ctx context.Context, keyspace st
 	}
 	wg.Wait()
 	if er.HasErrors() {
-		return fmt.Errorf("Permissions diffs:\n%v", er.Error().Error())
+		return fmt.Errorf("Permissions diffs: %v", er.Error().Error())
 	}
 	return nil
 }

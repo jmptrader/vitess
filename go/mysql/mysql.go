@@ -28,9 +28,7 @@ import (
 )
 
 const (
-	// NOTE(szopa): maxSize used to be 1 << 30, but that causes
-	// compiler errors in some situations.
-	maxSize = 1 << 20
+	maxSize = 1 << 32
 )
 
 func init() {
@@ -216,7 +214,7 @@ func (conn *Connection) IsClosed() bool {
 // ExecuteFetch executes the query on the connection
 func (conn *Connection) ExecuteFetch(query string, maxrows int, wantfields bool) (qr *sqltypes.Result, err error) {
 	if conn.IsClosed() {
-		return nil, sqldb.NewSQLError(2006, "Connection is closed")
+		return nil, sqldb.NewSQLError(2006, "", "Connection is closed")
 	}
 
 	if C.vt_execute(&conn.c, (*C.char)(hack.StringPointer(query)), C.ulong(len(query)), 0) != 0 {
@@ -239,7 +237,10 @@ func (conn *Connection) ExecuteFetch(query string, maxrows int, wantfields bool)
 		}
 	}
 	if wantfields {
-		qr.Fields = conn.Fields()
+		qr.Fields, err = conn.Fields()
+		if err != nil {
+			return nil, err
+		}
 	}
 	qr.Rows, err = conn.fetchAll()
 	return qr, err
@@ -270,7 +271,7 @@ func (conn *Connection) ExecuteFetchMap(query string) (map[string]string, error)
 // on the Connection until it returns nil or error
 func (conn *Connection) ExecuteStreamFetch(query string) (err error) {
 	if conn.IsClosed() {
-		return sqldb.NewSQLError(2006, "Connection is closed")
+		return sqldb.NewSQLError(2006, "", "Connection is closed")
 	}
 	if C.vt_execute(&conn.c, (*C.char)(hack.StringPointer(query)), C.ulong(len(query)), 1) != 0 {
 		return conn.lastError(query)
@@ -279,10 +280,10 @@ func (conn *Connection) ExecuteStreamFetch(query string) (err error) {
 }
 
 // Fields returns the current fields description for the query
-func (conn *Connection) Fields() (fields []*querypb.Field) {
+func (conn *Connection) Fields() (fields []*querypb.Field, err error) {
 	nfields := int(conn.c.num_fields)
 	if nfields == 0 {
-		return nil
+		return nil, nil
 	}
 	cfields := (*[maxSize]C.MYSQL_FIELD)(unsafe.Pointer(conn.c.fields))
 	totalLength := uint64(0)
@@ -295,10 +296,13 @@ func (conn *Connection) Fields() (fields []*querypb.Field) {
 		length := cfields[i].name_length
 		fname := (*[maxSize]byte)(unsafe.Pointer(cfields[i].name))[:length]
 		fvals[i].Name = string(fname)
-		fvals[i].Type = sqltypes.MySQLToType(int64(cfields[i]._type), int64(cfields[i].flags))
+		fvals[i].Type, err = sqltypes.MySQLToType(int64(cfields[i]._type), int64(cfields[i].flags))
+		if err != nil {
+			return nil, err
+		}
 		fields[i] = &fvals[i]
 	}
-	return fields
+	return fields, nil
 }
 
 func (conn *Connection) fetchAll() (rows [][]sqltypes.Value, err error) {
@@ -343,9 +347,13 @@ func (conn *Connection) FetchNext() (row []sqltypes.Value, err error) {
 		}
 		start := len(arena)
 		arena = append(arena, colPtr[:colLength]...)
+		typ, err := sqltypes.MySQLToType(int64(cfields[i]._type), int64(cfields[i].flags))
+		if err != nil {
+			return nil, err
+		}
 		// MySQL values can be trusted.
 		row[i] = sqltypes.MakeTrusted(
-			sqltypes.MySQLToType(int64(cfields[i]._type), int64(cfields[i].flags)),
+			typ,
 			arena[start:start+int(colLength)],
 		)
 	}
@@ -369,12 +377,14 @@ func (conn *Connection) lastError(query string) error {
 	if err := C.vt_error(&conn.c); *err != 0 {
 		return &sqldb.SQLError{
 			Num:     int(C.vt_errno(&conn.c)),
+			State:   C.GoString(C.vt_sqlstate(&conn.c)),
 			Message: C.GoString(err),
 			Query:   query,
 		}
 	}
 	return &sqldb.SQLError{
 		Num:     0,
+		State:   sqldb.SQLStateGeneral,
 		Message: "Dummy",
 		Query:   string(query),
 	}

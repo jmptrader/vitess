@@ -32,12 +32,12 @@ func NewPingWorker(wr *wrangler.Wrangler, message string) (Worker, error) {
 
 // StatusAsHTML implements the Worker interface
 func (pw *PingWorker) StatusAsHTML() template.HTML {
-	pw.Mu.Lock()
-	defer pw.Mu.Unlock()
+	state := pw.State()
+
 	result := "<b>Ping Command with message:</b> '" + pw.message + "'</br>\n"
-	result += "<b>State:</b> " + pw.State.String() + "</br>\n"
-	switch pw.State {
-	case WorkerStateCopy:
+	result += "<b>State:</b> " + state.String() + "</br>\n"
+	switch state {
+	case WorkerStateDebugRunning:
 		result += "<b>Running</b>:</br>\n"
 		result += "Logging message: '" + pw.message + "'</br>\n"
 	case WorkerStateDone:
@@ -50,12 +50,12 @@ func (pw *PingWorker) StatusAsHTML() template.HTML {
 
 // StatusAsText implements the Worker interface.
 func (pw *PingWorker) StatusAsText() string {
-	pw.Mu.Lock()
-	defer pw.Mu.Unlock()
+	state := pw.State()
+
 	result := "Ping Command with message: '" + pw.message + "'\n"
-	result += "State: " + pw.State.String() + "\n"
-	switch pw.State {
-	case WorkerStateCopy:
+	result += "State: " + state.String() + "\n"
+	switch state {
+	case WorkerStateDebugRunning:
 		result += "Logging message: '" + pw.message + "'\n"
 	case WorkerStateDone:
 		result += "Logged message: '" + pw.message + "'\n"
@@ -79,7 +79,7 @@ func (pw *PingWorker) Run(ctx context.Context) error {
 
 func (pw *PingWorker) run(ctx context.Context) error {
 	// We reuse the Copy state to reflect that the logging is in progress.
-	pw.SetState(WorkerStateCopy)
+	pw.SetState(WorkerStateDebugRunning)
 	pw.wr.Logger().Printf("Ping command was called with message: '%v'.\n", pw.message)
 	pw.SetState(WorkerStateDone)
 

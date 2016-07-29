@@ -13,6 +13,7 @@ import (
 	"golang.org/x/net/context"
 
 	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	vschemapb "github.com/youtube/vitess/go/vt/proto/vschema"
 )
 
 var (
@@ -84,7 +85,7 @@ type Impl interface {
 	// Can return ErrNoNode if the keyspace doesn't exist yet,
 	// or ErrBadVersion if the version has changed.
 	//
-	// Do not use directly, but instead use topo.UpdateKeyspace.
+	// Do not use directly, but instead use Server.UpdateKeyspace.
 	UpdateKeyspace(ctx context.Context, keyspace string, value *topodatapb.Keyspace, existingVersion int64) (newVersion int64, err error)
 
 	// DeleteKeyspace deletes the specified keyspace.
@@ -114,11 +115,10 @@ type Impl interface {
 
 	// UpdateShard updates the shard information
 	// pointed at by si.keyspace / si.shard to the *si value.
-	// This will only be called with a lock on the shard.
 	// Can return ErrNoNode if the shard doesn't exist yet,
 	// or ErrBadVersion if the version has changed.
 	//
-	// Do not use directly, but instead use topo.UpdateShard.
+	// Do not use directly, but instead use topo.UpdateShardFields.
 	UpdateShard(ctx context.Context, keyspace, shard string, value *topodatapb.Shard, existingVersion int64) (newVersion int64, err error)
 
 	// ValidateShard performs routine checks on the shard.
@@ -153,11 +153,6 @@ type Impl interface {
 	//
 	// Do not use directly, but instead use topo.UpdateTablet.
 	UpdateTablet(ctx context.Context, tablet *topodatapb.Tablet, existingVersion int64) (newVersion int64, err error)
-
-	// UpdateTabletFields updates the current tablet record
-	// with new values, independently of the version
-	// Can return ErrNoNode if the tablet doesn't exist.
-	UpdateTabletFields(ctx context.Context, tabletAlias *topodatapb.TabletAlias, update func(*topodatapb.Tablet) error) (*topodatapb.Tablet, error)
 
 	// DeleteTablet removes a tablet from the system.
 	// We assume no RPC is currently running to it.
@@ -200,74 +195,26 @@ type Impl interface {
 	// Serving Graph management, per cell.
 	//
 
-	// LockSrvShardForAction locks the serving shard in order to
-	// perform the action described by contents. It will wait for
-	// the lock until at most ctx.Done(). The wait can be interrupted
-	// by cancelling the context. It returns the lock path.
-	//
-	// Can return ErrTimeout or ErrInterrupted.
-	LockSrvShardForAction(ctx context.Context, cell, keyspace, shard, contents string) (string, error)
-
-	// UnlockSrvShardForAction unlocks a serving shard.
-	UnlockSrvShardForAction(ctx context.Context, cell, keyspace, shard, lockPath, results string) error
-
-	// GetSrvTabletTypesPerShard returns the existing serving types
-	// for a shard.
-	// Can return ErrNoNode.
-	GetSrvTabletTypesPerShard(ctx context.Context, cell, keyspace, shard string) ([]topodatapb.TabletType, error)
-
-	// CreateEndPoints creates and sets the serving records for a cell,
-	// keyspace, shard, tabletType.
-	// It returns ErrNodeExists if the record already exists.
-	CreateEndPoints(ctx context.Context, cell, keyspace, shard string, tabletType topodatapb.TabletType, addrs *topodatapb.EndPoints) error
-
-	// UpdateEndPoints updates the serving records for a cell,
-	// keyspace, shard, tabletType.
-	// If existingVersion is -1, it will set the value unconditionally,
-	// creating it if necessary.
-	// Otherwise, it will Compare-And-Set only if the version matches.
-	// Can return ErrBadVersion.
-	// Can return ErrNoNode only if existingVersion is not -1.
-	UpdateEndPoints(ctx context.Context, cell, keyspace, shard string, tabletType topodatapb.TabletType, addrs *topodatapb.EndPoints, existingVersion int64) error
-
-	// GetEndPoints returns the EndPoints list of serving addresses
-	// for a TabletType inside a shard, as well as the node version.
-	// Can return ErrNoNode.
-	GetEndPoints(ctx context.Context, cell, keyspace, shard string, tabletType topodatapb.TabletType) (ep *topodatapb.EndPoints, version int64, err error)
-
-	// DeleteEndPoints deletes the serving records for a cell,
-	// keyspace, shard, tabletType.
-	// If existingVersion is -1, it will delete the records unconditionally.
-	// Otherwise, it will Compare-And-Delete only if the version matches.
-	// Can return ErrNoNode or ErrBadVersion.
-	DeleteEndPoints(ctx context.Context, cell, keyspace, shard string, tabletType topodatapb.TabletType, existingVersion int64) error
+	// GetSrvKeyspaceNames returns the list of visible Keyspaces
+	// in this cell. They shall be sorted.
+	GetSrvKeyspaceNames(ctx context.Context, cell string) ([]string, error)
 
 	// WatchSrvKeyspace returns a channel that receives notifications
 	// every time the SrvKeyspace for the given keyspace / cell changes.
 	// It should receive a notification with the initial value fairly
 	// quickly after this is set. A value of nil means the SrvKeyspace
 	// object doesn't exist or is empty. To stop watching this
-	// SrvKeyspace object, close the stopWatching channel.
+	// SrvKeyspace object, cancel the context.
 	// If the underlying topo.Server encounters an error watching the node,
 	// it should retry on a regular basis until it can succeed.
 	// The initial error returned by this method is meant to catch
-	// the obvious bad cases (invalid cell, invalid tabletType, ...)
+	// the obvious bad cases (invalid cell, ...)
 	// that are never going to work. Mutiple notifications with the
-	// same contents may be sent (for instance when the serving graph
-	// is rebuilt, but the content hasn't changed).
-	WatchSrvKeyspace(ctx context.Context, cell, keyspace string) (notifications <-chan *topodatapb.SrvKeyspace, stopWatching chan<- struct{}, err error)
-
-	// UpdateSrvShard updates the serving records for a cell,
-	// keyspace, shard.
-	UpdateSrvShard(ctx context.Context, cell, keyspace, shard string, srvShard *topodatapb.SrvShard) error
-
-	// GetSrvShard reads a SrvShard record.
-	// Can return ErrNoNode.
-	GetSrvShard(ctx context.Context, cell, keyspace, shard string) (*topodatapb.SrvShard, error)
-
-	// DeleteSrvShard deletes a SrvShard record.
-	// Can return ErrNoNode.
-	DeleteSrvShard(ctx context.Context, cell, keyspace, shard string) error
+	// same contents may be sent (for instance, when the serving graph
+	// is rebuilt, but the content of SrvKeyspace is the same,
+	// the object version will change, most likely triggering the
+	// notification, but the content hasn't changed).
+	WatchSrvKeyspace(ctx context.Context, cell, keyspace string) (notifications <-chan *topodatapb.SrvKeyspace, err error)
 
 	// UpdateSrvKeyspace updates the serving records for a cell, keyspace.
 	UpdateSrvKeyspace(ctx context.Context, cell, keyspace string, srvKeyspace *topodatapb.SrvKeyspace) error
@@ -280,9 +227,29 @@ type Impl interface {
 	// Can return ErrNoNode.
 	GetSrvKeyspace(ctx context.Context, cell, keyspace string) (*topodatapb.SrvKeyspace, error)
 
-	// GetSrvKeyspaceNames returns the list of visible Keyspaces
-	// in this cell. They shall be sorted.
-	GetSrvKeyspaceNames(ctx context.Context, cell string) ([]string, error)
+	// WatchSrvVSchema returns a channel that receives notifications
+	// every time the SrvVSchema for the given cell changes.
+	// It should receive a notification with the initial value fairly
+	// quickly after this is set. A value of nil means the SrvVSchema
+	// object doesn't exist or is empty. To stop watching this
+	// SrvVSchema object, cancel the context.
+	// If the underlying topo.Server encounters an error watching the node,
+	// it should retry on a regular basis until it can succeed.
+	// The initial error returned by this method is meant to catch
+	// the obvious bad cases (invalid cell, ...)
+	// that are never going to work. Mutiple notifications with the
+	// same contents may be sent (for instance, when the schema graph
+	// is rebuilt, but the content of SrvVSchema is the same,
+	// the object version will change, most likely triggering the
+	// notification, but the content hasn't changed).
+	WatchSrvVSchema(ctx context.Context, cell string) (notifications <-chan *vschemapb.SrvVSchema, err error)
+
+	// UpdateSrvVSchema updates the serving records for a cell.
+	UpdateSrvVSchema(ctx context.Context, cell string, srvVSchema *vschemapb.SrvVSchema) error
+
+	// GetSrvVSchema reads a SrvVSchema record.
+	// Can return ErrNoNode.
+	GetSrvVSchema(ctx context.Context, cell string) (*vschemapb.SrvVSchema, error)
 
 	//
 	// Keyspace and Shard locks for actions, global.
@@ -315,18 +282,101 @@ type Impl interface {
 	//
 
 	// SaveVSchema saves the provided schema in the topo server.
-	SaveVSchema(context.Context, string) error
+	SaveVSchema(ctx context.Context, keyspace string, vschema *vschemapb.Keyspace) error
 
 	// GetVSchema retrieves the schema from the topo server.
 	//
-	// If no schema has been previously saved, it should return "{}"
-	GetVSchema(ctx context.Context) (string, error)
+	// Can return ErrNoNode
+	GetVSchema(ctx context.Context, keyspace string) (*vschemapb.Keyspace, error)
+
+	//
+	// Master election methods. This is meant to have a small
+	// number of processes elect a master within a group. The
+	// backend storage for this can either be the global topo
+	// server, or a resilient quorum of individual cells, to
+	// reduce the load / dependency on the global topo server.
+	//
+
+	// NewMasterParticipation creates a MasterParticipation
+	// object, used to become the Master in an election for the
+	// provided group name.  Id is the name of the local process,
+	// passing in the hostname:port of the current process as id
+	// is the common usage. Id must be unique for each process
+	// calling this, for a given name. Calling this function does
+	// not make the current process a candidate for the election.
+	NewMasterParticipation(name, id string) (MasterParticipation, error)
 }
 
 // Server is a wrapper type that can have extra methods.
 // Outside modules should just use the Server object.
 type Server struct {
 	Impl
+}
+
+// MasterParticipation is the object returned by NewMasterParticipation.
+// Sample usage:
+//
+// mp := server.NewMasterParticipation("vtctld", "hostname:8080")
+// job := NewJob()
+// go func() {
+//   for {
+//     ctx, err := mp.WaitForMastership()
+//     switch err {
+//     case nil:
+//       job.RunUntilContextDone(ctx)
+//     case topo.ErrInterrupted:
+//       return
+//     default:
+//       log.Errorf("Got error while waiting for master, will retry in 5s: %v", err)
+//       time.Sleep(5 * time.Second)
+//     }
+//   }
+// }()
+//
+// http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+//   if job.Running() {
+//     job.WriteStatus(w, r)
+//   } else {
+//     http.Redirect(w, r, mp.GetCurrentMasterID(), http.StatusFound)
+//   }
+// })
+//
+// servenv.OnTermSync(func() {
+//   mp.Shutdown()
+// })
+type MasterParticipation interface {
+	// WaitForMastership makes the current process a candidate
+	// for election, and waits until this process is the master.
+	// After we become the master, we may lose mastership. In that case,
+	// the returned context will be canceled. If Stop was called,
+	// WaitForMastership will return nil, ErrInterrupted.
+	WaitForMastership() (context.Context, error)
+
+	// Stop is called when we don't want to participate in the
+	// master election any more. Typically, that is when the
+	// hosting process is terminating.  We will relinquish
+	// mastership at that point, if we had it. Stop should
+	// not return until everything has been done.
+	// The MasterParticipation object should be discarded
+	// after Stop has been called. Any call to WaitForMastership
+	// after Stop() will return nil, ErrInterrupted.
+	// If WaitForMastership() was running, it will return
+	// nil, ErrInterrupted as soon as possible.
+	Stop()
+
+	// GetCurrentMasterID returns the current master id.
+	// This may not work after Stop has been called.
+	GetCurrentMasterID() (string, error)
+}
+
+// SrvTopoServer is a subset of Server that only contains the serving
+// graph read-only calls used by clients to resolve serving addresses,
+// and how to get VSchema. It is mostly used by our discovery modules,
+// and by vtgate.
+type SrvTopoServer interface {
+	GetSrvKeyspaceNames(ctx context.Context, cell string) ([]string, error)
+	GetSrvKeyspace(ctx context.Context, cell, keyspace string) (*topodatapb.SrvKeyspace, error)
+	WatchSrvVSchema(ctx context.Context, cell string) (notifications <-chan *vschemapb.SrvVSchema, err error)
 }
 
 // Registry for Server implementations.

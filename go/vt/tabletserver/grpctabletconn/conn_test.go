@@ -17,7 +17,7 @@ import (
 )
 
 // This test makes sure the go rpc service works
-func TestGoRPCTabletConn(t *testing.T) {
+func TestGRPCTabletConn(t *testing.T) {
 	// fake service
 	service := tabletconntest.CreateFakeServer(t)
 
@@ -31,20 +31,28 @@ func TestGoRPCTabletConn(t *testing.T) {
 
 	// Create a gRPC server and listen on the port
 	server := grpc.NewServer()
-	grpcqueryservice.RegisterForTest(server, service)
+	grpcqueryservice.Register(server, service)
 	go server.Serve(listener)
 
 	// run the test suite
-	tabletconntest.TestSuite(t, protocolName, &topodatapb.EndPoint{
-		Host: host,
+	tabletconntest.TestSuite(t, protocolName, &topodatapb.Tablet{
+		Keyspace: tabletconntest.TestTarget.Keyspace,
+		Shard:    tabletconntest.TestTarget.Shard,
+		Type:     tabletconntest.TestTarget.TabletType,
+		Hostname: host,
 		PortMap: map[string]int32{
 			"grpc": int32(port),
 		},
 	}, service)
 
-	// run the error test suite
-	tabletconntest.TestErrorSuite(t, protocolName, &topodatapb.EndPoint{
-		Host: host,
+	// run it again with combo enabled
+	t.Log("Enabling combo Begin / Execute{,Batch}")
+	*combo = true
+	tabletconntest.TestSuite(t, protocolName, &topodatapb.Tablet{
+		Keyspace: tabletconntest.TestTarget.Keyspace,
+		Shard:    tabletconntest.TestTarget.Shard,
+		Type:     tabletconntest.TestTarget.TabletType,
+		Hostname: host,
 		PortMap: map[string]int32{
 			"grpc": int32(port),
 		},

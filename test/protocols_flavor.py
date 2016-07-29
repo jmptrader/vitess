@@ -1,11 +1,9 @@
 #!/usr/bin/env python
 """Base class for protocols flavor.
 
-Each set of protocols has a flavor name. Derived classes should call
-register_flavor when they are imported.
+Each set of protocols has a flavor object. The current one is dynamically
+imported once.
 """
-
-import logging
 
 
 class ProtocolsFlavor(object):
@@ -48,12 +46,23 @@ class ProtocolsFlavor(object):
     """The protocol to use for connections from vtctl/vtgate to vttablet."""
     raise NotImplementedError('Not implemented in the base class')
 
+  def throttler_client_protocol(self):
+    """Client protocol for the resharding throttler.
+
+    This RPC interface is enabled in vtworker and vttablet.
+    """
+    raise NotImplementedError('Not implemented in the base class')
+
   def vtgate_protocol(self):
     """The protocol to use to talk to vtgate, in go."""
     raise NotImplementedError('Not implemented in the base class')
 
   def vtgate_python_protocol(self):
     """The protocol to use to talk to vtgate with python clients."""
+    raise NotImplementedError('Not implemented in the base class')
+
+  def vtgate_python_types(self):
+    """Returns either 'proto3' or 'mysql' for the enum types."""
     raise NotImplementedError('Not implemented in the base class')
 
   def client_error_exception_type(self):
@@ -73,29 +82,15 @@ class ProtocolsFlavor(object):
     raise NotImplementedError('Not implemented in the base class')
 
 
-_knows_protocols_flavor_map = {}
 _protocols_flavor = None
 
 
 def protocols_flavor():
+  """Returns the current ProtocolsFlavor object."""
   return _protocols_flavor
 
 
 def set_protocols_flavor(flavor):
-  """Set the protocols flavor by flavor name."""
+  """Set the protocols flavor implementation."""
   global _protocols_flavor
-
-  if not flavor:
-    flavor = 'gorpc'
-
-  cls = _knows_protocols_flavor_map.get(flavor, None)
-  if not cls:
-    logging.error('Unknown protocols flavor %s', flavor)
-    exit(1)
-  _protocols_flavor = cls()
-
-  logging.debug('Using protocols flavor %s', flavor)
-
-
-def register_flavor(key, cls):
-  _knows_protocols_flavor_map[key] = cls
+  _protocols_flavor = flavor

@@ -9,11 +9,11 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/youtube/vitess/go/vt/topo"
+	zookeeper "github.com/samuel/go-zookeeper/zk"
+	"golang.org/x/net/context"
+
 	"github.com/youtube/vitess/go/vt/topo/topoproto"
 	"github.com/youtube/vitess/go/zk"
-	"golang.org/x/net/context"
-	"launchpad.net/gozk/zookeeper"
 
 	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
 )
@@ -41,12 +41,9 @@ func (zkts *Server) CreateTablet(ctx context.Context, tablet *topodatapb.Tablet)
 	}
 
 	// Create /zk/<cell>/vt/tablets/<uid>
-	_, err = zk.CreateRecursive(zkts.zconn, zkTabletPath, string(data), 0, zookeeper.WorldACL(zookeeper.PERM_ALL))
+	_, err = zk.CreateRecursive(zkts.zconn, zkTabletPath, string(data), 0, zookeeper.WorldACL(zookeeper.PermAll))
 	if err != nil {
-		if zookeeper.IsError(err, zookeeper.ZNODEEXISTS) {
-			err = topo.ErrNodeExists
-		}
-		return err
+		return convertError(err)
 	}
 	return nil
 }
@@ -59,62 +56,18 @@ func (zkts *Server) UpdateTablet(ctx context.Context, tablet *topodatapb.Tablet,
 		return 0, err
 	}
 
-	stat, err := zkts.zconn.Set(zkTabletPath, string(data), int(existingVersion))
+	stat, err := zkts.zconn.Set(zkTabletPath, string(data), int32(existingVersion))
 	if err != nil {
-		if zookeeper.IsError(err, zookeeper.ZBADVERSION) {
-			err = topo.ErrBadVersion
-		} else if zookeeper.IsError(err, zookeeper.ZNONODE) {
-			err = topo.ErrNoNode
-		}
-
-		return 0, err
+		return 0, convertError(err)
 	}
-	return int64(stat.Version()), nil
-}
-
-// UpdateTabletFields is part of the topo.Server interface
-func (zkts *Server) UpdateTabletFields(ctx context.Context, tabletAlias *topodatapb.TabletAlias, update func(*topodatapb.Tablet) error) (*topodatapb.Tablet, error) {
-	// Store the last tablet value so we can log it if the change succeeds.
-	var lastTablet *topodatapb.Tablet
-
-	zkTabletPath := TabletPathForAlias(tabletAlias)
-	f := func(oldValue string, oldStat zk.Stat) (string, error) {
-		if oldValue == "" {
-			return "", fmt.Errorf("no data for tablet addr update: %v", tabletAlias)
-		}
-
-		tablet := &topodatapb.Tablet{}
-		if err := json.Unmarshal([]byte(oldValue), tablet); err != nil {
-			return "", err
-		}
-		if err := update(tablet); err != nil {
-			return "", err
-		}
-		lastTablet = tablet
-		data, err := json.MarshalIndent(tablet, "", "  ")
-		if err != nil {
-			return "", err
-		}
-		return string(data), nil
-	}
-	err := zkts.zconn.RetryChange(zkTabletPath, 0, zookeeper.WorldACL(zookeeper.PERM_ALL), f)
-	if err != nil {
-		if zookeeper.IsError(err, zookeeper.ZNONODE) {
-			err = topo.ErrNoNode
-		}
-		return nil, err
-	}
-	return lastTablet, nil
+	return int64(stat.Version), nil
 }
 
 // DeleteTablet is part of the topo.Server interface
 func (zkts *Server) DeleteTablet(ctx context.Context, alias *topodatapb.TabletAlias) error {
 	zkTabletPath := TabletPathForAlias(alias)
 	if err := zk.DeleteRecursive(zkts.zconn, zkTabletPath, -1); err != nil {
-		if zookeeper.IsError(err, zookeeper.ZNONODE) {
-			err = topo.ErrNoNode
-		}
-		return err
+		return convertError(err)
 	}
 	return nil
 }
@@ -124,17 +77,14 @@ func (zkts *Server) GetTablet(ctx context.Context, alias *topodatapb.TabletAlias
 	zkTabletPath := TabletPathForAlias(alias)
 	data, stat, err := zkts.zconn.Get(zkTabletPath)
 	if err != nil {
-		if zookeeper.IsError(err, zookeeper.ZNONODE) {
-			err = topo.ErrNoNode
-		}
-		return nil, 0, err
+		return nil, 0, convertError(err)
 	}
 
 	tablet := &topodatapb.Tablet{}
 	if err := json.Unmarshal([]byte(data), tablet); err != nil {
 		return nil, 0, err
 	}
-	return tablet, int64(stat.Version()), nil
+	return tablet, int64(stat.Version), nil
 }
 
 // GetTabletsByCell is part of the topo.Server interface
@@ -142,10 +92,7 @@ func (zkts *Server) GetTabletsByCell(ctx context.Context, cell string) ([]*topod
 	zkTabletsPath := tabletDirectoryForCell(cell)
 	children, _, err := zkts.zconn.Children(zkTabletsPath)
 	if err != nil {
-		if zookeeper.IsError(err, zookeeper.ZNONODE) {
-			err = topo.ErrNoNode
-		}
-		return nil, err
+		return nil, convertError(err)
 	}
 
 	sort.Strings(children)

@@ -5,14 +5,15 @@
 package zktopo
 
 import (
-	"github.com/youtube/vitess/go/vt/vtgate/planbuilder"
+	"encoding/json"
+	"fmt"
+	"path"
+
+	zookeeper "github.com/samuel/go-zookeeper/zk"
 	"golang.org/x/net/context"
-	// vindexes needs to be imported so that they register
-	// themselves against vtgate/planbuilder. This will allow
-	// us to sanity check the schema being uploaded.
-	_ "github.com/youtube/vitess/go/vt/vtgate/vindexes"
+
+	vschemapb "github.com/youtube/vitess/go/vt/proto/vschema"
 	"github.com/youtube/vitess/go/zk"
-	"launchpad.net/gozk/zookeeper"
 )
 
 /*
@@ -20,27 +21,31 @@ This file contains the vschema management code for zktopo.Server
 */
 
 const (
-	globalVSchemaPath = "/zk/global/vt/vschema"
+	vschemaPath = "vschema"
 )
 
-// SaveVSchema saves the JSON vschema into the topo.
-func (zkts *Server) SaveVSchema(ctx context.Context, vschema string) error {
-	_, err := planbuilder.NewSchema([]byte(vschema))
+// SaveVSchema saves the vschema into the topo.
+func (zkts *Server) SaveVSchema(ctx context.Context, keyspace string, vschema *vschemapb.Keyspace) error {
+	data, err := json.MarshalIndent(vschema, "", "  ")
 	if err != nil {
 		return err
 	}
-	_, err = zk.CreateOrUpdate(zkts.zconn, globalVSchemaPath, vschema, 0, zookeeper.WorldACL(zookeeper.PERM_ALL), true)
-	return err
+	vschemaPath := path.Join(GlobalKeyspacesPath, keyspace, vschemaPath)
+	_, err = zk.CreateOrUpdate(zkts.zconn, vschemaPath, string(data), 0, zookeeper.WorldACL(zookeeper.PermAll), true)
+	return convertError(err)
 }
 
 // GetVSchema fetches the JSON vschema from the topo.
-func (zkts *Server) GetVSchema(ctx context.Context) (string, error) {
-	data, _, err := zkts.zconn.Get(globalVSchemaPath)
+func (zkts *Server) GetVSchema(ctx context.Context, keyspace string) (*vschemapb.Keyspace, error) {
+	vschemaPath := path.Join(GlobalKeyspacesPath, keyspace, vschemaPath)
+	data, _, err := zkts.zconn.Get(vschemaPath)
 	if err != nil {
-		if zookeeper.IsError(err, zookeeper.ZNONODE) {
-			return "{}", nil
-		}
-		return "", err
+		return nil, convertError(err)
 	}
-	return data, nil
+	var vs vschemapb.Keyspace
+	err = json.Unmarshal([]byte(data), &vs)
+	if err != nil {
+		return nil, fmt.Errorf("bad vschema data (%v): %q", err, data)
+	}
+	return &vs, nil
 }

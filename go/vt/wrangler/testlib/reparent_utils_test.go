@@ -11,10 +11,11 @@ import (
 	"github.com/youtube/vitess/go/vt/logutil"
 	"github.com/youtube/vitess/go/vt/mysqlctl/replication"
 	"github.com/youtube/vitess/go/vt/tabletmanager/tmclient"
+	"github.com/youtube/vitess/go/vt/topo"
 	"github.com/youtube/vitess/go/vt/topo/topoproto"
 	"github.com/youtube/vitess/go/vt/vttest/fakesqldb"
 	"github.com/youtube/vitess/go/vt/wrangler"
-	"github.com/youtube/vitess/go/vt/zktopo"
+	"github.com/youtube/vitess/go/vt/zktopo/zktestserver"
 	"golang.org/x/net/context"
 
 	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
@@ -23,24 +24,22 @@ import (
 func TestShardReplicationStatuses(t *testing.T) {
 	ctx := context.Background()
 	db := fakesqldb.Register()
-	ts := zktopo.NewTestServer(t, []string{"cell1", "cell2"})
+	ts := zktestserver.New(t, []string{"cell1", "cell2"})
 	wr := wrangler.New(logutil.NewConsoleLogger(), ts, tmclient.NewTabletManagerClient())
 
 	// create shard and tablets
-	if err := ts.CreateShard(ctx, "test_keyspace", "0"); err != nil {
-		t.Fatalf("CreateShard failed: %v", err)
+	if _, err := ts.GetOrCreateShard(ctx, "test_keyspace", "0"); err != nil {
+		t.Fatalf("GetOrCreateShard failed: %v", err)
 	}
 	master := NewFakeTablet(t, wr, "cell1", 1, topodatapb.TabletType_MASTER, db)
 	slave := NewFakeTablet(t, wr, "cell1", 2, topodatapb.TabletType_REPLICA, db)
 
 	// mark the master inside the shard
-	si, err := ts.GetShard(ctx, "test_keyspace", "0")
-	if err != nil {
-		t.Fatalf("GetShard failed: %v", err)
-	}
-	si.MasterAlias = master.Tablet.Alias
-	if err := ts.UpdateShard(ctx, si); err != nil {
-		t.Fatalf("UpdateShard failed: %v", err)
+	if _, err := ts.UpdateShardFields(ctx, "test_keyspace", "0", func(si *topo.ShardInfo) error {
+		si.MasterAlias = master.Tablet.Alias
+		return nil
+	}); err != nil {
+		t.Fatalf("UpdateShardFields failed: %v", err)
 	}
 
 	// master action loop (to initialize host and port)
@@ -92,24 +91,22 @@ func TestShardReplicationStatuses(t *testing.T) {
 func TestReparentTablet(t *testing.T) {
 	ctx := context.Background()
 	db := fakesqldb.Register()
-	ts := zktopo.NewTestServer(t, []string{"cell1", "cell2"})
+	ts := zktestserver.New(t, []string{"cell1", "cell2"})
 	wr := wrangler.New(logutil.NewConsoleLogger(), ts, tmclient.NewTabletManagerClient())
 
 	// create shard and tablets
-	if err := ts.CreateShard(ctx, "test_keyspace", "0"); err != nil {
+	if _, err := ts.GetOrCreateShard(ctx, "test_keyspace", "0"); err != nil {
 		t.Fatalf("CreateShard failed: %v", err)
 	}
 	master := NewFakeTablet(t, wr, "cell1", 1, topodatapb.TabletType_MASTER, db)
 	slave := NewFakeTablet(t, wr, "cell1", 2, topodatapb.TabletType_REPLICA, db)
 
 	// mark the master inside the shard
-	si, err := ts.GetShard(ctx, "test_keyspace", "0")
-	if err != nil {
-		t.Fatalf("GetShard failed: %v", err)
-	}
-	si.MasterAlias = master.Tablet.Alias
-	if err := ts.UpdateShard(ctx, si); err != nil {
-		t.Fatalf("UpdateShard failed: %v", err)
+	if _, err := ts.UpdateShardFields(ctx, "test_keyspace", "0", func(si *topo.ShardInfo) error {
+		si.MasterAlias = master.Tablet.Alias
+		return nil
+	}); err != nil {
+		t.Fatalf("UpdateShardFields failed: %v", err)
 	}
 
 	// master action loop (to initialize host and port)
@@ -134,4 +131,5 @@ func TestReparentTablet(t *testing.T) {
 	if err := slave.FakeMysqlDaemon.CheckSuperQueryList(); err != nil {
 		t.Fatalf("slave.FakeMysqlDaemon.CheckSuperQueryList failed: %v", err)
 	}
+	checkSemiSyncEnabled(t, false, true, slave)
 }

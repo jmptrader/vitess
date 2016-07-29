@@ -4,222 +4,251 @@
 
 package vtgate
 
-// This is a V3 file. Do not intermix with V2.
-
 import (
 	"encoding/hex"
 	"fmt"
+	"strconv"
 
 	"github.com/youtube/vitess/go/sqltypes"
 	"github.com/youtube/vitess/go/vt/sqlannotation"
-	"github.com/youtube/vitess/go/vt/vtgate/planbuilder"
+	"github.com/youtube/vitess/go/vt/topo"
+	"github.com/youtube/vitess/go/vt/vtgate/engine"
+	"github.com/youtube/vitess/go/vt/vtgate/vindexes"
 	"golang.org/x/net/context"
 
 	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
 	vtgatepb "github.com/youtube/vitess/go/vt/proto/vtgate"
 )
 
-const (
-	ksidName = "keyspace_id"
-)
-
 // Router is the layer to route queries to the correct shards
 // based on the values in the query.
 type Router struct {
-	serv        SrvTopoServer
+	serv        topo.SrvTopoServer
 	cell        string
 	planner     *Planner
 	scatterConn *ScatterConn
 }
 
 type scatterParams struct {
-	query, ks string
+	ks        string
 	shardVars map[string]map[string]interface{}
 }
 
-func newScatterParams(query, ks string, bv map[string]interface{}, shards []string) *scatterParams {
+func newScatterParams(ks string, bv map[string]interface{}, shards []string) *scatterParams {
 	shardVars := make(map[string]map[string]interface{}, len(shards))
 	for _, shard := range shards {
 		shardVars[shard] = bv
 	}
 	return &scatterParams{
-		query:     query,
 		ks:        ks,
 		shardVars: shardVars,
 	}
 }
 
 // NewRouter creates a new Router.
-func NewRouter(serv SrvTopoServer, cell string, schema *planbuilder.Schema, statsName string, scatterConn *ScatterConn) *Router {
+func NewRouter(ctx context.Context, serv topo.SrvTopoServer, cell, statsName string, scatterConn *ScatterConn) *Router {
 	return &Router{
 		serv:        serv,
 		cell:        cell,
-		planner:     NewPlanner(schema, 5000),
+		planner:     NewPlanner(ctx, serv, cell, 5000),
 		scatterConn: scatterConn,
 	}
 }
 
 // Execute routes a non-streaming query.
-func (rtr *Router) Execute(ctx context.Context, sql string, bindVariables map[string]interface{}, tabletType topodatapb.TabletType, session *vtgatepb.Session, notInTransaction bool) (*sqltypes.Result, error) {
-	if bindVariables == nil {
-		bindVariables = make(map[string]interface{})
+func (rtr *Router) Execute(ctx context.Context, sql string, bindVars map[string]interface{}, keyspace string, tabletType topodatapb.TabletType, session *vtgatepb.Session, notInTransaction bool) (*sqltypes.Result, error) {
+	if bindVars == nil {
+		bindVars = make(map[string]interface{})
 	}
-	vcursor := newRequestContext(ctx, sql, bindVariables, tabletType, session, notInTransaction, rtr)
-	plan := rtr.planner.GetPlan(sql)
+	vcursor := newRequestContext(ctx, sql, bindVars, keyspace, tabletType, session, notInTransaction, rtr)
+	plan, err := rtr.planner.GetPlan(sql, keyspace)
+	if err != nil {
+		return nil, err
+	}
+	return plan.Instructions.Execute(vcursor, make(map[string]interface{}), true)
+}
 
-	switch plan.ID {
-	case planbuilder.UpdateEqual:
-		return rtr.execUpdateEqual(vcursor, plan)
-	case planbuilder.DeleteEqual:
-		return rtr.execDeleteEqual(vcursor, plan)
-	case planbuilder.InsertSharded:
-		return rtr.execInsertSharded(vcursor, plan)
+// StreamExecute executes a streaming query.
+func (rtr *Router) StreamExecute(ctx context.Context, sql string, bindVars map[string]interface{}, keyspace string, tabletType topodatapb.TabletType, sendReply func(*sqltypes.Result) error) error {
+	if bindVars == nil {
+		bindVars = make(map[string]interface{})
+	}
+	vcursor := newRequestContext(ctx, sql, bindVars, keyspace, tabletType, nil, false, rtr)
+	plan, err := rtr.planner.GetPlan(sql, keyspace)
+	if err != nil {
+		return err
+	}
+	return plan.Instructions.StreamExecute(vcursor, make(map[string]interface{}), true, sendReply)
+}
+
+// ExecuteRoute executes the route query for all route opcodes.
+func (rtr *Router) ExecuteRoute(vcursor *requestContext, route *engine.Route, joinvars map[string]interface{}) (*sqltypes.Result, error) {
+	saved := copyBindVars(vcursor.bindVars)
+	defer func() { vcursor.bindVars = saved }()
+	for k, v := range joinvars {
+		vcursor.bindVars[k] = v
+	}
+
+	switch route.Opcode {
+	case engine.UpdateEqual:
+		return rtr.execUpdateEqual(vcursor, route)
+	case engine.DeleteEqual:
+		return rtr.execDeleteEqual(vcursor, route)
+	case engine.InsertSharded:
+		return rtr.execInsertSharded(vcursor, route)
 	}
 
 	var err error
 	var params *scatterParams
-	switch plan.ID {
-	case planbuilder.SelectUnsharded, planbuilder.UpdateUnsharded,
-		planbuilder.DeleteUnsharded, planbuilder.InsertUnsharded:
-		params, err = rtr.paramsUnsharded(vcursor, plan)
-	case planbuilder.SelectEqual:
-		params, err = rtr.paramsSelectEqual(vcursor, plan)
-	case planbuilder.SelectIN:
-		params, err = rtr.paramsSelectIN(vcursor, plan)
-	case planbuilder.SelectKeyrange:
-		params, err = rtr.paramsSelectKeyrange(vcursor, plan)
-	case planbuilder.SelectScatter:
-		params, err = rtr.paramsSelectScatter(vcursor, plan)
+	switch route.Opcode {
+	case engine.SelectUnsharded, engine.UpdateUnsharded,
+		engine.DeleteUnsharded, engine.InsertUnsharded:
+		params, err = rtr.paramsUnsharded(vcursor, route)
+	case engine.SelectEqual, engine.SelectEqualUnique:
+		params, err = rtr.paramsSelectEqual(vcursor, route)
+	case engine.SelectIN:
+		params, err = rtr.paramsSelectIN(vcursor, route)
+	case engine.SelectScatter:
+		params, err = rtr.paramsSelectScatter(vcursor, route)
 	default:
-		return nil, fmt.Errorf("cannot route query: %s: %s", sql, plan.Reason)
+		// TODO(sougou): improve error.
+		return nil, fmt.Errorf("unsupported query route: %v", route)
 	}
 	if err != nil {
 		return nil, err
 	}
 	return rtr.scatterConn.ExecuteMulti(
-		ctx,
-		params.query,
+		vcursor.ctx,
+		route.Query+vcursor.comments,
 		params.ks,
 		params.shardVars,
-		tabletType,
-		NewSafeSession(session),
-		notInTransaction,
+		vcursor.tabletType,
+		NewSafeSession(vcursor.session),
+		vcursor.notInTransaction,
 	)
 }
 
-// StreamExecute executes a streaming query.
-func (rtr *Router) StreamExecute(ctx context.Context, sql string, bindVariables map[string]interface{}, tabletType topodatapb.TabletType, sendReply func(*sqltypes.Result) error) error {
-	if bindVariables == nil {
-		bindVariables = make(map[string]interface{})
+func copyBindVars(bindVars map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{})
+	for k, v := range bindVars {
+		out[k] = v
 	}
-	vcursor := newRequestContext(ctx, sql, bindVariables, tabletType, nil, false, rtr)
-	plan := rtr.planner.GetPlan(sql)
+	return out
+}
+
+// GetRouteFields fetches the field info for the route.
+func (rtr *Router) GetRouteFields(vcursor *requestContext, route *engine.Route, joinvars map[string]interface{}) (*sqltypes.Result, error) {
+	saved := copyBindVars(vcursor.bindVars)
+	defer func() { vcursor.bindVars = saved }()
+	for k := range joinvars {
+		vcursor.bindVars[k] = nil
+	}
+	ks, shard, err := getAnyShard(vcursor.ctx, rtr.serv, rtr.cell, route.Keyspace.Name, vcursor.tabletType)
+	if err != nil {
+		return nil, err
+	}
+
+	return rtr.scatterConn.Execute(
+		vcursor.ctx,
+		route.FieldQuery,
+		vcursor.bindVars,
+		ks,
+		[]string{shard},
+		vcursor.tabletType,
+		NewSafeSession(vcursor.session),
+		vcursor.notInTransaction,
+	)
+}
+
+// StreamExecuteRoute performs a streaming route. Only selects are allowed.
+func (rtr *Router) StreamExecuteRoute(vcursor *requestContext, route *engine.Route, joinvars map[string]interface{}, sendReply func(*sqltypes.Result) error) error {
+	saved := copyBindVars(vcursor.bindVars)
+	defer func() { vcursor.bindVars = saved }()
+	for k, v := range joinvars {
+		vcursor.bindVars[k] = v
+	}
 
 	var err error
 	var params *scatterParams
-	switch plan.ID {
-	case planbuilder.SelectUnsharded:
-		params, err = rtr.paramsUnsharded(vcursor, plan)
-	case planbuilder.SelectEqual:
-		params, err = rtr.paramsSelectEqual(vcursor, plan)
-	case planbuilder.SelectIN:
-		params, err = rtr.paramsSelectIN(vcursor, plan)
-	case planbuilder.SelectKeyrange:
-		params, err = rtr.paramsSelectKeyrange(vcursor, plan)
-	case planbuilder.SelectScatter:
-		params, err = rtr.paramsSelectScatter(vcursor, plan)
+	switch route.Opcode {
+	case engine.SelectUnsharded:
+		params, err = rtr.paramsUnsharded(vcursor, route)
+	case engine.SelectEqual, engine.SelectEqualUnique:
+		params, err = rtr.paramsSelectEqual(vcursor, route)
+	case engine.SelectIN:
+		params, err = rtr.paramsSelectIN(vcursor, route)
+	case engine.SelectScatter:
+		params, err = rtr.paramsSelectScatter(vcursor, route)
 	default:
-		return fmt.Errorf("query %q cannot be used for streaming", sql)
+		return fmt.Errorf("query %q cannot be used for streaming", route.Query)
 	}
 	if err != nil {
 		return err
 	}
 	return rtr.scatterConn.StreamExecuteMulti(
-		ctx,
-		params.query,
+		vcursor.ctx,
+		route.Query+vcursor.comments,
 		params.ks,
 		params.shardVars,
-		tabletType,
+		vcursor.tabletType,
 		sendReply,
 	)
 }
 
-func (rtr *Router) paramsUnsharded(vcursor *requestContext, plan *planbuilder.Plan) (*scatterParams, error) {
-	ks, _, allShards, err := getKeyspaceShards(vcursor.ctx, rtr.serv, rtr.cell, plan.Table.Keyspace.Name, vcursor.tabletType)
+// IsKeyspaceRangeBasedSharded returns true if the keyspace in the vschema is
+// marked as sharded.
+func (rtr *Router) IsKeyspaceRangeBasedSharded(keyspace string) bool {
+	vschema := rtr.planner.VSchema()
+	ks, ok := vschema.Keyspaces[keyspace]
+	if !ok {
+		return false
+	}
+	if ks.Keyspace == nil {
+		return false
+	}
+	return ks.Keyspace.Sharded
+}
+
+func (rtr *Router) paramsUnsharded(vcursor *requestContext, route *engine.Route) (*scatterParams, error) {
+	ks, _, allShards, err := getKeyspaceShards(vcursor.ctx, rtr.serv, rtr.cell, route.Keyspace.Name, vcursor.tabletType)
 	if err != nil {
 		return nil, fmt.Errorf("paramsUnsharded: %v", err)
 	}
 	if len(allShards) != 1 {
 		return nil, fmt.Errorf("unsharded keyspace %s has multiple shards", ks)
 	}
-	return newScatterParams(vcursor.sql, ks, vcursor.bindVariables, []string{allShards[0].Name}), nil
+	return newScatterParams(ks, vcursor.bindVars, []string{allShards[0].Name}), nil
 }
 
-func (rtr *Router) paramsSelectEqual(vcursor *requestContext, plan *planbuilder.Plan) (*scatterParams, error) {
-	keys, err := rtr.resolveKeys([]interface{}{plan.Values}, vcursor.bindVariables)
+func (rtr *Router) paramsSelectEqual(vcursor *requestContext, route *engine.Route) (*scatterParams, error) {
+	keys, err := rtr.resolveKeys([]interface{}{route.Values}, vcursor.bindVars)
 	if err != nil {
 		return nil, fmt.Errorf("paramsSelectEqual: %v", err)
 	}
-	ks, routing, err := rtr.resolveShards(vcursor, keys, plan)
+	ks, routing, err := rtr.resolveShards(vcursor, keys, route)
 	if err != nil {
 		return nil, fmt.Errorf("paramsSelectEqual: %v", err)
 	}
-	return newScatterParams(plan.Rewritten, ks, vcursor.bindVariables, routing.Shards()), nil
+	return newScatterParams(ks, vcursor.bindVars, routing.Shards()), nil
 }
 
-func (rtr *Router) paramsSelectIN(vcursor *requestContext, plan *planbuilder.Plan) (*scatterParams, error) {
-	keys, err := rtr.resolveKeys(plan.Values.([]interface{}), vcursor.bindVariables)
+func (rtr *Router) paramsSelectIN(vcursor *requestContext, route *engine.Route) (*scatterParams, error) {
+	keys, err := rtr.resolveKeys(route.Values.([]interface{}), vcursor.bindVars)
 	if err != nil {
 		return nil, fmt.Errorf("paramsSelectIN: %v", err)
 	}
-	ks, routing, err := rtr.resolveShards(vcursor, keys, plan)
+	ks, routing, err := rtr.resolveShards(vcursor, keys, route)
 	if err != nil {
 		return nil, fmt.Errorf("paramsSelectEqual: %v", err)
 	}
 	return &scatterParams{
-		query:     plan.Rewritten,
 		ks:        ks,
-		shardVars: routing.ShardVars(vcursor.bindVariables),
+		shardVars: routing.ShardVars(vcursor.bindVars),
 	}, nil
 }
 
-func (rtr *Router) paramsSelectKeyrange(vcursor *requestContext, plan *planbuilder.Plan) (*scatterParams, error) {
-	keys, err := rtr.resolveKeys(plan.Values.([]interface{}), vcursor.bindVariables)
-	if err != nil {
-		return nil, fmt.Errorf("paramsSelectKeyrange: %v", err)
-	}
-	kr, err := getKeyRange(keys)
-	if err != nil {
-		return nil, fmt.Errorf("paramsSelectKeyrange: %v", err)
-	}
-	ks, shards, err := mapExactShards(vcursor.ctx, rtr.serv, rtr.cell, plan.Table.Keyspace.Name, vcursor.tabletType, kr)
-	if err != nil {
-		return nil, fmt.Errorf("paramsSelectKeyrange: %v", err)
-	}
-	if len(shards) != 1 {
-		return nil, fmt.Errorf("keyrange must match exactly one shard: %+v", keys)
-	}
-	return newScatterParams(plan.Rewritten, ks, vcursor.bindVariables, shards), nil
-}
-
-func getKeyRange(keys []interface{}) (*topodatapb.KeyRange, error) {
-	var ksids [][]byte
-	for _, k := range keys {
-		switch k := k.(type) {
-		case string:
-			ksids = append(ksids, []byte(k))
-		default:
-			return nil, fmt.Errorf("expecting strings for keyrange: %+v", keys)
-		}
-	}
-	return &topodatapb.KeyRange{
-		Start: ksids[0],
-		End:   ksids[1],
-	}, nil
-}
-
-func (rtr *Router) paramsSelectScatter(vcursor *requestContext, plan *planbuilder.Plan) (*scatterParams, error) {
-	ks, _, allShards, err := getKeyspaceShards(vcursor.ctx, rtr.serv, rtr.cell, plan.Table.Keyspace.Name, vcursor.tabletType)
+func (rtr *Router) paramsSelectScatter(vcursor *requestContext, route *engine.Route) (*scatterParams, error) {
+	ks, _, allShards, err := getKeyspaceShards(vcursor.ctx, rtr.serv, rtr.cell, route.Keyspace.Name, vcursor.tabletType)
 	if err != nil {
 		return nil, fmt.Errorf("paramsSelectScatter: %v", err)
 	}
@@ -227,27 +256,26 @@ func (rtr *Router) paramsSelectScatter(vcursor *requestContext, plan *planbuilde
 	for _, shard := range allShards {
 		shards = append(shards, shard.Name)
 	}
-	return newScatterParams(plan.Rewritten, ks, vcursor.bindVariables, shards), nil
+	return newScatterParams(ks, vcursor.bindVars, shards), nil
 }
 
-func (rtr *Router) execUpdateEqual(vcursor *requestContext, plan *planbuilder.Plan) (*sqltypes.Result, error) {
-	keys, err := rtr.resolveKeys([]interface{}{plan.Values}, vcursor.bindVariables)
+func (rtr *Router) execUpdateEqual(vcursor *requestContext, route *engine.Route) (*sqltypes.Result, error) {
+	keys, err := rtr.resolveKeys([]interface{}{route.Values}, vcursor.bindVars)
 	if err != nil {
 		return nil, fmt.Errorf("execUpdateEqual: %v", err)
 	}
-	ks, shard, ksid, err := rtr.resolveSingleShard(vcursor, keys[0], plan)
+	ks, shard, ksid, err := rtr.resolveSingleShard(vcursor, keys[0], route)
 	if err != nil {
 		return nil, fmt.Errorf("execUpdateEqual: %v", err)
 	}
 	if len(ksid) == 0 {
 		return &sqltypes.Result{}, nil
 	}
-	vcursor.bindVariables[ksidName] = string(ksid)
-	rewritten := sqlannotation.AddKeyspaceID(plan.Rewritten, ksid)
+	rewritten := sqlannotation.AddKeyspaceID(route.Query, ksid, vcursor.comments)
 	return rtr.scatterConn.Execute(
 		vcursor.ctx,
 		rewritten,
-		vcursor.bindVariables,
+		vcursor.bindVars,
 		ks,
 		[]string{shard},
 		vcursor.tabletType,
@@ -255,30 +283,29 @@ func (rtr *Router) execUpdateEqual(vcursor *requestContext, plan *planbuilder.Pl
 		vcursor.notInTransaction)
 }
 
-func (rtr *Router) execDeleteEqual(vcursor *requestContext, plan *planbuilder.Plan) (*sqltypes.Result, error) {
-	keys, err := rtr.resolveKeys([]interface{}{plan.Values}, vcursor.bindVariables)
+func (rtr *Router) execDeleteEqual(vcursor *requestContext, route *engine.Route) (*sqltypes.Result, error) {
+	keys, err := rtr.resolveKeys([]interface{}{route.Values}, vcursor.bindVars)
 	if err != nil {
 		return nil, fmt.Errorf("execDeleteEqual: %v", err)
 	}
-	ks, shard, ksid, err := rtr.resolveSingleShard(vcursor, keys[0], plan)
+	ks, shard, ksid, err := rtr.resolveSingleShard(vcursor, keys[0], route)
 	if err != nil {
 		return nil, fmt.Errorf("execDeleteEqual: %v", err)
 	}
 	if len(ksid) == 0 {
 		return &sqltypes.Result{}, nil
 	}
-	if plan.Subquery != "" {
-		err = rtr.deleteVindexEntries(vcursor, plan, ks, shard, ksid)
+	if route.Subquery != "" {
+		err = rtr.deleteVindexEntries(vcursor, route, ks, shard, ksid)
 		if err != nil {
 			return nil, fmt.Errorf("execDeleteEqual: %v", err)
 		}
 	}
-	vcursor.bindVariables[ksidName] = string(ksid)
-	rewritten := sqlannotation.AddKeyspaceID(plan.Rewritten, ksid)
+	rewritten := sqlannotation.AddKeyspaceID(route.Query, ksid, vcursor.comments)
 	return rtr.scatterConn.Execute(
 		vcursor.ctx,
 		rewritten,
-		vcursor.bindVariables,
+		vcursor.bindVars,
 		ks,
 		[]string{shard},
 		vcursor.tabletType,
@@ -286,51 +313,63 @@ func (rtr *Router) execDeleteEqual(vcursor *requestContext, plan *planbuilder.Pl
 		vcursor.notInTransaction)
 }
 
-func (rtr *Router) execInsertSharded(vcursor *requestContext, plan *planbuilder.Plan) (*sqltypes.Result, error) {
-	input := plan.Values.([]interface{})
-	keys, err := rtr.resolveKeys(input, vcursor.bindVariables)
-	if err != nil {
-		return nil, fmt.Errorf("execInsertSharded: %v", err)
-	}
-	ksid, generated, err := rtr.handlePrimary(vcursor, keys[0], plan.Table.ColVindexes[0], vcursor.bindVariables)
-	if err != nil {
-		return nil, fmt.Errorf("execInsertSharded: %v", err)
-	}
-	ks, shard, err := rtr.getRouting(vcursor.ctx, plan.Table.Keyspace.Name, vcursor.tabletType, ksid)
-	if err != nil {
-		return nil, fmt.Errorf("execInsertSharded: %v", err)
-	}
-	for i := 1; i < len(keys); i++ {
-		newgen, err := rtr.handleNonPrimary(vcursor, keys[i], plan.Table.ColVindexes[i], vcursor.bindVariables, ksid)
+func (rtr *Router) execInsertSharded(vcursor *requestContext, route *engine.Route) (*sqltypes.Result, error) {
+	var firstKsid []byte
+	var firstAutoGenInsertID int64
+	inputs := route.Values.([]interface{})
+	for rowNum, input := range inputs {
+		insertid, err := rtr.handleGenerate(vcursor, route.Generate, rowNum)
+		if firstAutoGenInsertID == 0 && insertid != 0 {
+			firstAutoGenInsertID = insertid
+		}
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("execInsertSharded: %v", err)
 		}
-		if newgen != 0 {
-			if generated != 0 {
-				return nil, fmt.Errorf("insert generated more than one value")
+
+		keys, err := rtr.resolveKeys(input.([]interface{}), vcursor.bindVars)
+		if err != nil {
+			return nil, fmt.Errorf("execInsertSharded: %v", err)
+		}
+		for colNum := 0; colNum < len(keys); colNum++ {
+			if rowNum == 0 && colNum == 0 {
+				ksid, err := rtr.handlePrimary(vcursor, keys[0], route.Table.ColumnVindexes[0], vcursor.bindVars, rowNum)
+				if err != nil {
+					return nil, fmt.Errorf("execInsertSharded: %v", err)
+				}
+				firstKsid = ksid
+			} else {
+				err := rtr.handleNonPrimary(vcursor, keys[colNum], route.Table.ColumnVindexes[colNum], vcursor.bindVars, firstKsid, rowNum)
+				if err != nil {
+					return nil, fmt.Errorf("execInsertSharded: %v", err)
+				}
 			}
-			generated = newgen
 		}
 	}
-	vcursor.bindVariables[ksidName] = string(ksid)
-	rewritten := sqlannotation.AddKeyspaceID(plan.Rewritten, ksid)
+
+	ks, shard, err := rtr.getRouting(vcursor.ctx, route.Keyspace.Name, vcursor.tabletType, firstKsid)
+	if err != nil {
+		return nil, fmt.Errorf("execInsertSharded: %v", err)
+	}
+
+	rewritten := sqlannotation.AddKeyspaceID(route.Query, firstKsid, vcursor.comments)
 	result, err := rtr.scatterConn.Execute(
 		vcursor.ctx,
 		rewritten,
-		vcursor.bindVariables,
+		vcursor.bindVars,
 		ks,
 		[]string{shard},
 		vcursor.tabletType,
 		NewSafeSession(vcursor.session),
 		vcursor.notInTransaction)
+
 	if err != nil {
 		return nil, fmt.Errorf("execInsertSharded: %v", err)
 	}
-	if generated != 0 {
+	if firstAutoGenInsertID != 0 {
 		if result.InsertID != 0 {
-			return nil, fmt.Errorf("vindex and db generated a value each for insert")
+			return nil, fmt.Errorf("sequence and db generated a value each for insert")
 		}
-		result.InsertID = uint64(generated)
+		result.InsertID = uint64(firstAutoGenInsertID)
 	}
 	return result, nil
 }
@@ -338,30 +377,25 @@ func (rtr *Router) execInsertSharded(vcursor *requestContext, plan *planbuilder.
 func (rtr *Router) resolveKeys(vals []interface{}, bindVars map[string]interface{}) (keys []interface{}, err error) {
 	keys = make([]interface{}, 0, len(vals))
 	for _, val := range vals {
-		switch val := val.(type) {
-		case string:
-			v, ok := bindVars[val[1:]]
+		if v, ok := val.(string); ok {
+			val, ok = bindVars[v[1:]]
 			if !ok {
-				return nil, fmt.Errorf("could not find bind var %s", val)
+				return nil, fmt.Errorf("could not find bind var %s", v)
 			}
-			keys = append(keys, v)
-		case []byte:
-			keys = append(keys, string(val))
-		default:
-			keys = append(keys, val)
 		}
+		keys = append(keys, val)
 	}
 	return keys, nil
 }
 
-func (rtr *Router) resolveShards(vcursor *requestContext, vindexKeys []interface{}, plan *planbuilder.Plan) (newKeyspace string, routing routingMap, err error) {
-	newKeyspace, _, allShards, err := getKeyspaceShards(vcursor.ctx, rtr.serv, rtr.cell, plan.Table.Keyspace.Name, vcursor.tabletType)
+func (rtr *Router) resolveShards(vcursor *requestContext, vindexKeys []interface{}, route *engine.Route) (newKeyspace string, routing routingMap, err error) {
+	newKeyspace, _, allShards, err := getKeyspaceShards(vcursor.ctx, rtr.serv, rtr.cell, route.Keyspace.Name, vcursor.tabletType)
 	if err != nil {
 		return "", nil, err
 	}
 	routing = make(routingMap)
-	switch mapper := plan.ColVindex.Vindex.(type) {
-	case planbuilder.Unique:
+	switch mapper := route.Vindex.(type) {
+	case vindexes.Unique:
 		ksids, err := mapper.Map(vcursor, vindexKeys)
 		if err != nil {
 			return "", nil, err
@@ -376,7 +410,7 @@ func (rtr *Router) resolveShards(vcursor *requestContext, vindexKeys []interface
 			}
 			routing.Add(shard, vindexKeys[i])
 		}
-	case planbuilder.NonUnique:
+	case vindexes.NonUnique:
 		ksidss, err := mapper.Map(vcursor, vindexKeys)
 		if err != nil {
 			return "", nil, err
@@ -396,12 +430,12 @@ func (rtr *Router) resolveShards(vcursor *requestContext, vindexKeys []interface
 	return newKeyspace, routing, nil
 }
 
-func (rtr *Router) resolveSingleShard(vcursor *requestContext, vindexKey interface{}, plan *planbuilder.Plan) (newKeyspace, shard string, ksid []byte, err error) {
-	newKeyspace, _, allShards, err := getKeyspaceShards(vcursor.ctx, rtr.serv, rtr.cell, plan.Table.Keyspace.Name, vcursor.tabletType)
+func (rtr *Router) resolveSingleShard(vcursor *requestContext, vindexKey interface{}, route *engine.Route) (newKeyspace, shard string, ksid []byte, err error) {
+	newKeyspace, _, allShards, err := getKeyspaceShards(vcursor.ctx, rtr.serv, rtr.cell, route.Keyspace.Name, vcursor.tabletType)
 	if err != nil {
 		return "", "", nil, err
 	}
-	mapper := plan.ColVindex.Vindex.(planbuilder.Unique)
+	mapper := route.Vindex.(vindexes.Unique)
 	ksids, err := mapper.Map(vcursor, []interface{}{vindexKey})
 	if err != nil {
 		return "", "", nil, err
@@ -417,11 +451,11 @@ func (rtr *Router) resolveSingleShard(vcursor *requestContext, vindexKey interfa
 	return newKeyspace, shard, ksid, nil
 }
 
-func (rtr *Router) deleteVindexEntries(vcursor *requestContext, plan *planbuilder.Plan, ks, shard string, ksid []byte) error {
+func (rtr *Router) deleteVindexEntries(vcursor *requestContext, route *engine.Route, ks, shard string, ksid []byte) error {
 	result, err := rtr.scatterConn.Execute(
 		vcursor.ctx,
-		plan.Subquery,
-		vcursor.bindVariables,
+		route.Subquery,
+		vcursor.bindVars,
 		ks,
 		[]string{shard},
 		vcursor.tabletType,
@@ -433,7 +467,7 @@ func (rtr *Router) deleteVindexEntries(vcursor *requestContext, plan *planbuilde
 	if len(result.Rows) == 0 {
 		return nil
 	}
-	for i, colVindex := range plan.Table.Owned {
+	for i, colVindex := range route.Table.Owned {
 		keys := make(map[interface{}]bool)
 		for _, row := range result.Rows {
 			switch k := row[i].ToNative().(type) {
@@ -448,11 +482,7 @@ func (rtr *Router) deleteVindexEntries(vcursor *requestContext, plan *planbuilde
 			ids = append(ids, k)
 		}
 		switch vindex := colVindex.Vindex.(type) {
-		case planbuilder.Functional:
-			if err = vindex.Delete(vcursor, ids, ksid); err != nil {
-				return err
-			}
-		case planbuilder.Lookup:
+		case vindexes.Lookup:
 			if err = vindex.Delete(vcursor, ids, ksid); err != nil {
 				return err
 			}
@@ -463,87 +493,106 @@ func (rtr *Router) deleteVindexEntries(vcursor *requestContext, plan *planbuilde
 	return nil
 }
 
-func (rtr *Router) handlePrimary(vcursor *requestContext, vindexKey interface{}, colVindex *planbuilder.ColVindex, bv map[string]interface{}) (ksid []byte, generated int64, err error) {
-	if colVindex.Owned {
-		if vindexKey == nil {
-			generator, ok := colVindex.Vindex.(planbuilder.FunctionalGenerator)
-			if !ok {
-				return nil, 0, fmt.Errorf("value must be supplied for column %s", colVindex.Col)
-			}
-			generated, err = generator.Generate(vcursor)
-			vindexKey = generated
-			if err != nil {
-				return nil, 0, err
-			}
-		} else {
-			// TODO(sougou): I think we have to ignore dup key error if this was
-			// an upsert. For now, I'm punting on this because this would be a very
-			// uncommon use case. We should revisit this when work on v3 resumes.
-			err = colVindex.Vindex.(planbuilder.Functional).Create(vcursor, vindexKey)
-			if err != nil {
-				return nil, 0, err
-			}
+func (rtr *Router) handleGenerate(vcursor *requestContext, gen *engine.Generate, rowNum int) (insertid int64, err error) {
+	if gen == nil {
+		return 0, nil
+	}
+	val := gen.Value.([]interface{})[rowNum]
+	if v, ok := val.(string); ok {
+		val, ok = vcursor.bindVars[v[1:]]
+		if !ok {
+			return 0, fmt.Errorf("handleGenerate: could not find bind var %s", v)
 		}
 	}
-	if vindexKey == nil {
-		return nil, 0, fmt.Errorf("value must be supplied for column %s", colVindex.Col)
+	if val != nil {
+		vcursor.bindVars[engine.SeqVarName+strconv.Itoa(rowNum)] = val
+		return 0, nil
 	}
-	mapper := colVindex.Vindex.(planbuilder.Unique)
+	// TODO(sougou): This is similar to paramsUnsharded.
+	ks, _, allShards, err := getKeyspaceShards(vcursor.ctx, rtr.serv, rtr.cell, gen.Keyspace.Name, vcursor.tabletType)
+	if err != nil {
+		return 0, fmt.Errorf("handleGenerate: %v", err)
+	}
+	if len(allShards) != 1 {
+		return 0, fmt.Errorf("unsharded keyspace %s has multiple shards", ks)
+	}
+	params := newScatterParams(ks, nil, []string{allShards[0].Name})
+	// We nil out the transaction context for this particular call.
+	// TODO(sougou): Use ExecuteShard instead.
+	qr, err := rtr.scatterConn.ExecuteMulti(
+		vcursor.ctx,
+		gen.Query,
+		params.ks,
+		params.shardVars,
+		vcursor.tabletType,
+		NewSafeSession(nil),
+		false,
+	)
+	if err != nil {
+		return 0, err
+	}
+	// If no rows are returned, it's an internal error, and the code
+	// must panic, which will caught and reported.
+	num, err := qr.Rows[0][0].ParseInt64()
+	if err != nil {
+		return 0, err
+	}
+	vcursor.bindVars[engine.SeqVarName+strconv.Itoa(rowNum)] = num
+	return num, nil
+}
+
+func (rtr *Router) handlePrimary(vcursor *requestContext, vindexKey interface{}, colVindex *vindexes.ColumnVindex, bv map[string]interface{}, rowNum int) (ksid []byte, err error) {
+	if vindexKey == nil {
+		return nil, fmt.Errorf("value must be supplied for column %v", colVindex.Column)
+	}
+	mapper := colVindex.Vindex.(vindexes.Unique)
 	ksids, err := mapper.Map(vcursor, []interface{}{vindexKey})
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	ksid = ksids[0]
 	if len(ksid) == 0 {
-		return nil, 0, fmt.Errorf("could not map %v to a keyspace id", vindexKey)
+		return nil, fmt.Errorf("could not map %v to a keyspace id", vindexKey)
 	}
-	bv["_"+colVindex.Col] = vindexKey
-	return ksid, generated, nil
+	bv["_"+colVindex.Column.Original()+strconv.Itoa(rowNum)] = vindexKey
+	return ksid, nil
 }
 
-func (rtr *Router) handleNonPrimary(vcursor *requestContext, vindexKey interface{}, colVindex *planbuilder.ColVindex, bv map[string]interface{}, ksid []byte) (generated int64, err error) {
+func (rtr *Router) handleNonPrimary(vcursor *requestContext, vindexKey interface{}, colVindex *vindexes.ColumnVindex, bv map[string]interface{}, ksid []byte, rowNum int) error {
 	if colVindex.Owned {
 		if vindexKey == nil {
-			generator, ok := colVindex.Vindex.(planbuilder.LookupGenerator)
-			if !ok {
-				return 0, fmt.Errorf("value must be supplied for column %s", colVindex.Col)
-			}
-			generated, err = generator.Generate(vcursor, ksid)
-			vindexKey = generated
-			if err != nil {
-				return 0, err
-			}
-		} else {
-			err = colVindex.Vindex.(planbuilder.Lookup).Create(vcursor, vindexKey, ksid)
-			if err != nil {
-				return 0, err
-			}
+			return fmt.Errorf("value must be supplied for column %v", colVindex.Column)
+		}
+		err := colVindex.Vindex.(vindexes.Lookup).Create(vcursor, vindexKey, ksid)
+		if err != nil {
+			return err
 		}
 	} else {
 		if vindexKey == nil {
-			reversible, ok := colVindex.Vindex.(planbuilder.Reversible)
+			reversible, ok := colVindex.Vindex.(vindexes.Reversible)
 			if !ok {
-				return 0, fmt.Errorf("value must be supplied for column %s", colVindex.Col)
+				return fmt.Errorf("value must be supplied for column %v", colVindex.Column)
 			}
+			var err error
 			vindexKey, err = reversible.ReverseMap(vcursor, ksid)
 			if err != nil {
-				return 0, err
+				return err
 			}
 			if vindexKey == nil {
-				return 0, fmt.Errorf("could not compute value for column %v", colVindex.Col)
+				return fmt.Errorf("could not compute value for column %v", colVindex.Column)
 			}
 		} else {
 			ok, err := colVindex.Vindex.Verify(vcursor, vindexKey, ksid)
 			if err != nil {
-				return 0, err
+				return err
 			}
 			if !ok {
-				return 0, fmt.Errorf("value %v for column %s does not map to keyspace id %v", vindexKey, colVindex.Col, hex.EncodeToString(ksid))
+				return fmt.Errorf("value %v for column %v does not map to keyspace id %v", vindexKey, colVindex.Column, hex.EncodeToString(ksid))
 			}
 		}
 	}
-	bv["_"+colVindex.Col] = vindexKey
-	return generated, nil
+	bv["_"+colVindex.Column.Original()+strconv.Itoa(rowNum)] = vindexKey
+	return nil
 }
 
 func (rtr *Router) getRouting(ctx context.Context, keyspace string, tabletType topodatapb.TabletType, ksid []byte) (newKeyspace, shard string, err error) {

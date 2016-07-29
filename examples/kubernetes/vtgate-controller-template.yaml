@@ -1,13 +1,14 @@
 kind: ReplicationController
 apiVersion: v1
 metadata:
-  name: vtgate
+  name: vtgate-{{cell}}
 spec:
   replicas: {{replicas}}
   template:
     metadata:
       labels:
         component: vtgate
+        cell: {{cell}}
         app: vitess
     spec:
       containers:
@@ -40,9 +41,12 @@ spec:
               -log_dir $VTDATAROOT/tmp
               -alsologtostderr
               -port 15001
-              -tablet_protocol grpc
-              -service_map 'bsonrpc-vt-vtgateservice'
-              -cell test" vitess
+              -grpc_port 15991
+              -service_map 'grpc-vtgateservice'
+              -cells_to_watch {{cell}}
+              -tablet_types_to_wait MASTER,REPLICA
+              -gateway_implementation discoverygateway
+              -cell {{cell}}" vitess
       volumes:
         - name: syslog
           hostPath: {path: /dev/log}

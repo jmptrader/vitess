@@ -8,21 +8,30 @@ package schema
 // It contains a data structure that's shared between sqlparser & tabletserver
 
 import (
+	"fmt"
+
+	"github.com/youtube/vitess/go/cistring"
 	"github.com/youtube/vitess/go/sqltypes"
 	"github.com/youtube/vitess/go/sync2"
 	querypb "github.com/youtube/vitess/go/vt/proto/query"
 )
 
-// Cache types
+// Table types
 const (
-	CacheNone = 0
-	CacheRW   = 1
-	CacheW    = 2
+	NoType = iota
+	Sequence
 )
+
+// TypeNames allows to fetch a the type name for a table.
+// Count must match the number of table types.
+var TypeNames = []string{
+	"none",
+	"sequence",
+}
 
 // TableColumn contains info about a table's column.
 type TableColumn struct {
-	Name    string
+	Name    cistring.CIString
 	Type    querypb.Type
 	IsAuto  bool
 	Default sqltypes.Value
@@ -34,7 +43,7 @@ type Table struct {
 	Columns   []TableColumn
 	Indexes   []*Index
 	PKColumns []int
-	CacheType int
+	Type      int
 
 	// These vars can be accessed concurrently.
 	TableRows   sync2.AtomicInt64
@@ -46,16 +55,14 @@ type Table struct {
 // NewTable creates a new Table.
 func NewTable(name string) *Table {
 	return &Table{
-		Name:    name,
-		Columns: make([]TableColumn, 0, 16),
-		Indexes: make([]*Index, 0, 8),
+		Name: name,
 	}
 }
 
 // AddColumn adds a column to the Table.
 func (ta *Table) AddColumn(name string, columnType querypb.Type, defval sqltypes.Value, extra string) {
 	index := len(ta.Columns)
-	ta.Columns = append(ta.Columns, TableColumn{Name: name})
+	ta.Columns = append(ta.Columns, TableColumn{Name: cistring.New(name)})
 	ta.Columns[index].Type = columnType
 	if extra == "auto_increment" {
 		ta.Columns[index].IsAuto = true
@@ -72,8 +79,9 @@ func (ta *Table) AddColumn(name string, columnType querypb.Type, defval sqltypes
 // FindColumn finds a column in the table. It returns the index if found.
 // Otherwise, it returns -1.
 func (ta *Table) FindColumn(name string) int {
+	ciName := cistring.New(name)
 	for i, col := range ta.Columns {
-		if col.Name == name {
+		if col.Name.Equal(ciName) {
 			return i
 		}
 	}
@@ -106,20 +114,25 @@ func (ta *Table) SetMysqlStats(tr, dl, il, df sqltypes.Value) {
 
 // Index contains info about a table index.
 type Index struct {
-	Name        string
-	Columns     []string
+	Name cistring.CIString
+	// Columns are the columns comprising the index.
+	Columns []cistring.CIString
+	// Cardinality[i] is the number of distinct values of Columns[i] in the
+	// table.
 	Cardinality []uint64
-	DataColumns []string
+	// DataColumns are the primary-key columns for secondary indices and
+	// all the columns for the primary-key index.
+	DataColumns []cistring.CIString
 }
 
 // NewIndex creates a new Index.
 func NewIndex(name string) *Index {
-	return &Index{name, make([]string, 0, 8), make([]uint64, 0, 8), nil}
+	return &Index{Name: cistring.New(name)}
 }
 
 // AddColumn adds a column to the index.
 func (idx *Index) AddColumn(name string, cardinality uint64) {
-	idx.Columns = append(idx.Columns, name)
+	idx.Columns = append(idx.Columns, cistring.New(name))
 	if cardinality == 0 {
 		cardinality = uint64(len(idx.Cardinality) + 1)
 	}
@@ -129,8 +142,9 @@ func (idx *Index) AddColumn(name string, cardinality uint64) {
 // FindColumn finds a column in the index. It returns the index if found.
 // Otherwise, it returns -1.
 func (idx *Index) FindColumn(name string) int {
+	ciName := cistring.New(name)
 	for i, colName := range idx.Columns {
-		if name == colName {
+		if colName.Equal(ciName) {
 			return i
 		}
 	}
@@ -140,10 +154,16 @@ func (idx *Index) FindColumn(name string) int {
 // FindDataColumn finds a data column in the index. It returns the index if found.
 // Otherwise, it returns -1.
 func (idx *Index) FindDataColumn(name string) int {
+	ciName := cistring.New(name)
 	for i, colName := range idx.DataColumns {
-		if name == colName {
+		if colName.Equal(ciName) {
 			return i
 		}
 	}
 	return -1
+}
+
+// String() pretty-prints TableColumn into a string.
+func (c *TableColumn) String() string {
+	return fmt.Sprintf("{Name: '%v', Type: %v}", c.Name, c.Type)
 }

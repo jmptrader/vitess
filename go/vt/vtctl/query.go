@@ -9,17 +9,22 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/olekukonko/tablewriter"
+	"github.com/youtube/vitess/go/sqltypes"
+	"github.com/youtube/vitess/go/vt/logutil"
+	"github.com/youtube/vitess/go/vt/servenv"
 	"github.com/youtube/vitess/go/vt/tabletserver/tabletconn"
-	"github.com/youtube/vitess/go/vt/topo"
 	"github.com/youtube/vitess/go/vt/topo/topoproto"
 	"github.com/youtube/vitess/go/vt/vtgate/vtgateconn"
 	"github.com/youtube/vitess/go/vt/wrangler"
 	"golang.org/x/net/context"
 
+	querypb "github.com/youtube/vitess/go/vt/proto/query"
 	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
 )
 
@@ -27,57 +32,67 @@ import (
 
 const queriesGroupName = "Queries"
 
+var (
+	enableQueries = flag.Bool("enable_queries", false, "if set, allows vtgate and vttablet queries. May have security implications, as the queries will be run from this process.")
+)
+
 func init() {
-	addCommandGroup(queriesGroupName)
+	servenv.OnRun(func() {
+		if !*enableQueries {
+			return
+		}
 
-	// VtGate commands
-	addCommand(queriesGroupName, command{
-		"VtGateExecute",
-		commandVtGateExecute,
-		"-server <vtgate> [-bind_variables <JSON map>] [-connect_timeout <connect timeout>] [-tablet_type <tablet type>] <sql>",
-		"Executes the given SQL query with the provided bound variables against the vtgate server."})
-	addCommand(queriesGroupName, command{
-		"VtGateExecuteShards",
-		commandVtGateExecuteShards,
-		"-server <vtgate> -keyspace <keyspace> -shards <shard0>,<shard1>,... [-bind_variables <JSON map>] [-connect_timeout <connect timeout>] [-tablet_type <tablet type>] <sql>",
-		"Executes the given SQL query with the provided bound variables against the vtgate server. It is routed to the provided shards."})
-	addCommand(queriesGroupName, command{
-		"VtGateExecuteKeyspaceIds",
-		commandVtGateExecuteKeyspaceIds,
-		"-server <vtgate> -keyspace <keyspace> -keyspace_ids <ks1 in hex>,<k2 in hex>,... [-bind_variables <JSON map>] [-connect_timeout <connect timeout>] [-tablet_type <tablet type>] <sql>",
-		"Executes the given SQL query with the provided bound variables against the vtgate server. It is routed to the shards that contain the provided keyspace ids."})
-	addCommand(queriesGroupName, command{
-		"VtGateSplitQuery",
-		commandVtGateSplitQuery,
-		"-server <vtgate> -keyspace <keyspace> [-split_column <split_column>] -split_count <split_count> [-bind_variables <JSON map>] [-connect_timeout <connect timeout>] <sql>",
-		"Executes the SplitQuery computation for the given SQL query with the provided bound variables against the vtgate server (this is the base query for Map-Reduce workloads, and is provided here for debug / test purposes)."})
+		addCommandGroup(queriesGroupName)
 
-	// VtTablet commands
-	addCommand(queriesGroupName, command{
-		"VtTabletExecute",
-		commandVtTabletExecute,
-		"[-bind_variables <JSON map>] [-connect_timeout <connect timeout>] [-transaction_id <transaction_id>] [-tablet_type <tablet_type>] -keyspace <keyspace> -shard <shard> <tablet alias> <sql>",
-		"Executes the given query on the given tablet."})
-	addCommand(queriesGroupName, command{
-		"VtTabletBegin",
-		commandVtTabletBegin,
-		"[-connect_timeout <connect timeout>] [-tablet_type <tablet_type>] -keyspace <keyspace> -shard <shard> <tablet alias>",
-		"Starts a transaction on the provided server."})
-	addCommand(queriesGroupName, command{
-		"VtTabletCommit",
-		commandVtTabletCommit,
-		"[-connect_timeout <connect timeout>] [-tablet_type <tablet_type>] -keyspace <keyspace> -shard <shard> <tablet alias> <transaction_id>",
-		"Commits a transaction on the provided server."})
-	addCommand(queriesGroupName, command{
-		"VtTabletRollback",
-		commandVtTabletRollback,
-		"[-connect_timeout <connect timeout>] [-tablet_type <tablet_type>] -keyspace <keyspace> -shard <shard> <tablet alias> <transaction_id>",
-		"Rollbacks a transaction on the provided server."})
-	addCommand(queriesGroupName, command{
-		"VtTabletStreamHealth",
-		commandVtTabletStreamHealth,
-		"[-count <count, default 1>] [-connect_timeout <connect timeout>] <tablet alias>",
-		"Executes the StreamHealth streaming query to a vttablet process. Will stop after getting <count> answers."})
+		// VtGate commands
+		addCommand(queriesGroupName, command{
+			"VtGateExecute",
+			commandVtGateExecute,
+			"-server <vtgate> [-bind_variables <JSON map>] [-connect_timeout <connect timeout>] [-keyspace <default keyspace>] [-tablet_type <tablet type>] [-json] <sql>",
+			"Executes the given SQL query with the provided bound variables against the vtgate server."})
+		addCommand(queriesGroupName, command{
+			"VtGateExecuteShards",
+			commandVtGateExecuteShards,
+			"-server <vtgate> -keyspace <keyspace> -shards <shard0>,<shard1>,... [-bind_variables <JSON map>] [-connect_timeout <connect timeout>] [-tablet_type <tablet type>] [-json] <sql>",
+			"Executes the given SQL query with the provided bound variables against the vtgate server. It is routed to the provided shards."})
+		addCommand(queriesGroupName, command{
+			"VtGateExecuteKeyspaceIds",
+			commandVtGateExecuteKeyspaceIds,
+			"-server <vtgate> -keyspace <keyspace> -keyspace_ids <ks1 in hex>,<k2 in hex>,... [-bind_variables <JSON map>] [-connect_timeout <connect timeout>] [-tablet_type <tablet type>] [-json] <sql>",
+			"Executes the given SQL query with the provided bound variables against the vtgate server. It is routed to the shards that contain the provided keyspace ids."})
+		addCommand(queriesGroupName, command{
+			"VtGateSplitQuery",
+			commandVtGateSplitQuery,
+			"-server <vtgate> -keyspace <keyspace> [-split_column <split_column>] -split_count <split_count> [-bind_variables <JSON map>] [-connect_timeout <connect timeout>] <sql>",
+			"Executes the SplitQuery computation for the given SQL query with the provided bound variables against the vtgate server (this is the base query for Map-Reduce workloads, and is provided here for debug / test purposes)."})
+
+		// VtTablet commands
+		addCommand(queriesGroupName, command{
+			"VtTabletExecute",
+			commandVtTabletExecute,
+			"[-bind_variables <JSON map>] [-connect_timeout <connect timeout>] [-transaction_id <transaction_id>] [-tablet_type <tablet_type>] [-json] -keyspace <keyspace> -shard <shard> <tablet alias> <sql>",
+			"Executes the given query on the given tablet."})
+		addCommand(queriesGroupName, command{
+			"VtTabletBegin",
+			commandVtTabletBegin,
+			"[-connect_timeout <connect timeout>] [-tablet_type <tablet_type>] -keyspace <keyspace> -shard <shard> <tablet alias>",
+			"Starts a transaction on the provided server."})
+		addCommand(queriesGroupName, command{
+			"VtTabletCommit",
+			commandVtTabletCommit,
+			"[-connect_timeout <connect timeout>] [-tablet_type <tablet_type>] -keyspace <keyspace> -shard <shard> <tablet alias> <transaction_id>",
+			"Commits a transaction on the provided server."})
+		addCommand(queriesGroupName, command{
+			"VtTabletRollback",
+			commandVtTabletRollback,
+			"[-connect_timeout <connect timeout>] [-tablet_type <tablet_type>] -keyspace <keyspace> -shard <shard> <tablet alias> <transaction_id>",
+			"Rollbacks a transaction on the provided server."})
+		addCommand(queriesGroupName, command{
+			"VtTabletStreamHealth",
+			commandVtTabletStreamHealth,
+			"[-count <count, default 1>] [-connect_timeout <connect timeout>] <tablet alias>",
+			"Executes the StreamHealth streaming query to a vttablet process. Will stop after getting <count> answers."})
+	})
 }
 
 type bindvars map[string]interface{}
@@ -124,7 +139,10 @@ func commandVtGateExecute(ctx context.Context, wr *wrangler.Wrangler, subFlags *
 	server := subFlags.String("server", "", "VtGate server to connect to")
 	bindVariables := newBindvars(subFlags)
 	connectTimeout := subFlags.Duration("connect_timeout", 30*time.Second, "Connection timeout for vtgate client")
+	keyspace := subFlags.String("keyspace", "", "default keyspace to use")
 	tabletType := subFlags.String("tablet_type", "master", "tablet type to query")
+	json := subFlags.Bool("json", false, "Output JSON instead of human-readable table")
+
 	if err := subFlags.Parse(args); err != nil {
 		return err
 	}
@@ -136,7 +154,7 @@ func commandVtGateExecute(ctx context.Context, wr *wrangler.Wrangler, subFlags *
 		return err
 	}
 
-	vtgateConn, err := vtgateconn.Dial(ctx, *server, *connectTimeout)
+	vtgateConn, err := vtgateconn.Dial(ctx, *server, *connectTimeout, *keyspace)
 	if err != nil {
 		return fmt.Errorf("error connecting to vtgate '%v': %v", *server, err)
 	}
@@ -145,7 +163,11 @@ func commandVtGateExecute(ctx context.Context, wr *wrangler.Wrangler, subFlags *
 	if err != nil {
 		return fmt.Errorf("Execute failed: %v", err)
 	}
-	return printJSON(wr, qr)
+	if *json {
+		return printJSON(wr.Logger(), qr)
+	}
+	printQueryResult(loggerWriter{wr.Logger()}, qr)
+	return nil
 }
 
 func commandVtGateExecuteShards(ctx context.Context, wr *wrangler.Wrangler, subFlags *flag.FlagSet, args []string) error {
@@ -155,6 +177,8 @@ func commandVtGateExecuteShards(ctx context.Context, wr *wrangler.Wrangler, subF
 	tabletType := subFlags.String("tablet_type", "master", "tablet type to query")
 	keyspace := subFlags.String("keyspace", "", "keyspace to send query to")
 	shardsStr := subFlags.String("shards", "", "comma-separated list of shards to send query to")
+	json := subFlags.Bool("json", false, "Output JSON instead of human-readable table")
+
 	if err := subFlags.Parse(args); err != nil {
 		return err
 	}
@@ -170,7 +194,7 @@ func commandVtGateExecuteShards(ctx context.Context, wr *wrangler.Wrangler, subF
 		shards = strings.Split(*shardsStr, ",")
 	}
 
-	vtgateConn, err := vtgateconn.Dial(ctx, *server, *connectTimeout)
+	vtgateConn, err := vtgateconn.Dial(ctx, *server, *connectTimeout, "")
 	if err != nil {
 		return fmt.Errorf("error connecting to vtgate '%v': %v", *server, err)
 	}
@@ -179,7 +203,11 @@ func commandVtGateExecuteShards(ctx context.Context, wr *wrangler.Wrangler, subF
 	if err != nil {
 		return fmt.Errorf("Execute failed: %v", err)
 	}
-	return printJSON(wr, qr)
+	if *json {
+		return printJSON(wr.Logger(), qr)
+	}
+	printQueryResult(loggerWriter{wr.Logger()}, qr)
+	return nil
 }
 
 func commandVtGateExecuteKeyspaceIds(ctx context.Context, wr *wrangler.Wrangler, subFlags *flag.FlagSet, args []string) error {
@@ -189,6 +217,8 @@ func commandVtGateExecuteKeyspaceIds(ctx context.Context, wr *wrangler.Wrangler,
 	tabletType := subFlags.String("tablet_type", "master", "tablet type to query")
 	keyspace := subFlags.String("keyspace", "", "keyspace to send query to")
 	keyspaceIDsStr := subFlags.String("keyspace_ids", "", "comma-separated list of keyspace ids (in hex) that will map into shards to send query to")
+	json := subFlags.Bool("json", false, "Output JSON instead of human-readable table")
+
 	if err := subFlags.Parse(args); err != nil {
 		return err
 	}
@@ -211,7 +241,7 @@ func commandVtGateExecuteKeyspaceIds(ctx context.Context, wr *wrangler.Wrangler,
 		}
 	}
 
-	vtgateConn, err := vtgateconn.Dial(ctx, *server, *connectTimeout)
+	vtgateConn, err := vtgateconn.Dial(ctx, *server, *connectTimeout, "")
 	if err != nil {
 		return fmt.Errorf("error connecting to vtgate '%v': %v", *server, err)
 	}
@@ -220,7 +250,11 @@ func commandVtGateExecuteKeyspaceIds(ctx context.Context, wr *wrangler.Wrangler,
 	if err != nil {
 		return fmt.Errorf("Execute failed: %v", err)
 	}
-	return printJSON(wr, qr)
+	if *json {
+		return printJSON(wr.Logger(), qr)
+	}
+	printQueryResult(loggerWriter{wr.Logger()}, qr)
+	return nil
 }
 
 func commandVtGateSplitQuery(ctx context.Context, wr *wrangler.Wrangler, subFlags *flag.FlagSet, args []string) error {
@@ -237,34 +271,29 @@ func commandVtGateSplitQuery(ctx context.Context, wr *wrangler.Wrangler, subFlag
 		return fmt.Errorf("the <sql> argument is required for the VtGateSplitQuery command")
 	}
 
-	vtgateConn, err := vtgateconn.Dial(ctx, *server, *connectTimeout)
+	vtgateConn, err := vtgateconn.Dial(ctx, *server, *connectTimeout, "")
 	if err != nil {
 		return fmt.Errorf("error connecting to vtgate '%v': %v", *server, err)
 	}
 	defer vtgateConn.Close()
-	r, err := vtgateConn.SplitQuery(ctx, *keyspace, subFlags.Arg(0), *bindVariables, *splitColumn, *splitCount)
+	r, err := vtgateConn.SplitQuery(ctx, *keyspace, subFlags.Arg(0), *bindVariables, *splitColumn, int64(*splitCount))
 	if err != nil {
 		return fmt.Errorf("SplitQuery failed: %v", err)
 	}
-	return printJSON(wr, r)
+	return printJSON(wr.Logger(), r)
 }
 
 func commandVtTabletExecute(ctx context.Context, wr *wrangler.Wrangler, subFlags *flag.FlagSet, args []string) error {
 	transactionID := subFlags.Int("transaction_id", 0, "transaction id to use, if inside a transaction.")
 	bindVariables := newBindvars(subFlags)
-	keyspace := subFlags.String("keyspace", "", "keyspace the tablet belongs to")
-	shard := subFlags.String("shard", "", "shard the tablet belongs to")
-	tabletType := subFlags.String("tablet_type", "unknown", "tablet type we expect from the tablet (use unknown to use sessionId)")
 	connectTimeout := subFlags.Duration("connect_timeout", 30*time.Second, "Connection timeout for vttablet client")
+	json := subFlags.Bool("json", false, "Output JSON instead of human-readable table")
+
 	if err := subFlags.Parse(args); err != nil {
 		return err
 	}
 	if subFlags.NArg() != 2 {
 		return fmt.Errorf("the <tablet_alias> and <sql> arguments are required for the VtTabletExecute command")
-	}
-	tt, err := topoproto.ParseTabletType(*tabletType)
-	if err != nil {
-		return err
 	}
 	tabletAlias, err := topoproto.ParseTabletAlias(subFlags.Arg(0))
 	if err != nil {
@@ -274,28 +303,29 @@ func commandVtTabletExecute(ctx context.Context, wr *wrangler.Wrangler, subFlags
 	if err != nil {
 		return err
 	}
-	ep, err := topo.TabletEndPoint(tabletInfo.Tablet)
-	if err != nil {
-		return fmt.Errorf("cannot get EndPoint from tablet record: %v", err)
-	}
 
-	conn, err := tabletconn.GetDialer()(ctx, ep, *keyspace, *shard, tt, *connectTimeout)
+	conn, err := tabletconn.GetDialer()(tabletInfo.Tablet, *connectTimeout)
 	if err != nil {
 		return fmt.Errorf("cannot connect to tablet %v: %v", tabletAlias, err)
 	}
 	defer conn.Close()
 
-	qr, err := conn.Execute(ctx, subFlags.Arg(1), *bindVariables, int64(*transactionID))
+	qr, err := conn.Execute(ctx, &querypb.Target{
+		Keyspace:   tabletInfo.Tablet.Keyspace,
+		Shard:      tabletInfo.Tablet.Shard,
+		TabletType: tabletInfo.Tablet.Type,
+	}, subFlags.Arg(1), *bindVariables, int64(*transactionID))
 	if err != nil {
 		return fmt.Errorf("Execute failed: %v", err)
 	}
-	return printJSON(wr, qr)
+	if *json {
+		return printJSON(wr.Logger(), qr)
+	}
+	printQueryResult(loggerWriter{wr.Logger()}, qr)
+	return nil
 }
 
 func commandVtTabletBegin(ctx context.Context, wr *wrangler.Wrangler, subFlags *flag.FlagSet, args []string) error {
-	keyspace := subFlags.String("keyspace", "", "keyspace the tablet belongs to")
-	shard := subFlags.String("shard", "", "shard the tablet belongs to")
-	tabletType := subFlags.String("tablet_type", "unknown", "tablet type we expect from the tablet (use unknown to use sessionId)")
 	connectTimeout := subFlags.Duration("connect_timeout", 30*time.Second, "Connection timeout for vttablet client")
 	if err := subFlags.Parse(args); err != nil {
 		return err
@@ -303,10 +333,6 @@ func commandVtTabletBegin(ctx context.Context, wr *wrangler.Wrangler, subFlags *
 	if subFlags.NArg() != 1 {
 		return fmt.Errorf("the <tablet_alias> argument is required for the VtTabletBegin command")
 	}
-	tt, err := topoproto.ParseTabletType(*tabletType)
-	if err != nil {
-		return err
-	}
 	tabletAlias, err := topoproto.ParseTabletAlias(subFlags.Arg(0))
 	if err != nil {
 		return err
@@ -315,31 +341,28 @@ func commandVtTabletBegin(ctx context.Context, wr *wrangler.Wrangler, subFlags *
 	if err != nil {
 		return err
 	}
-	ep, err := topo.TabletEndPoint(tabletInfo.Tablet)
-	if err != nil {
-		return fmt.Errorf("cannot get EndPoint from tablet record: %v", err)
-	}
 
-	conn, err := tabletconn.GetDialer()(ctx, ep, *keyspace, *shard, tt, *connectTimeout)
+	conn, err := tabletconn.GetDialer()(tabletInfo.Tablet, *connectTimeout)
 	if err != nil {
 		return fmt.Errorf("cannot connect to tablet %v: %v", tabletAlias, err)
 	}
 	defer conn.Close()
 
-	transactionID, err := conn.Begin(ctx)
+	transactionID, err := conn.Begin(ctx, &querypb.Target{
+		Keyspace:   tabletInfo.Tablet.Keyspace,
+		Shard:      tabletInfo.Tablet.Shard,
+		TabletType: tabletInfo.Tablet.Type,
+	})
 	if err != nil {
 		return fmt.Errorf("Begin failed: %v", err)
 	}
 	result := map[string]int64{
 		"transaction_id": transactionID,
 	}
-	return printJSON(wr, result)
+	return printJSON(wr.Logger(), result)
 }
 
 func commandVtTabletCommit(ctx context.Context, wr *wrangler.Wrangler, subFlags *flag.FlagSet, args []string) error {
-	keyspace := subFlags.String("keyspace", "", "keyspace the tablet belongs to")
-	shard := subFlags.String("shard", "", "shard the tablet belongs to")
-	tabletType := subFlags.String("tablet_type", "unknown", "tablet type we expect from the tablet (use unknown to use sessionId)")
 	connectTimeout := subFlags.Duration("connect_timeout", 30*time.Second, "Connection timeout for vttablet client")
 	if err := subFlags.Parse(args); err != nil {
 		return err
@@ -351,10 +374,6 @@ func commandVtTabletCommit(ctx context.Context, wr *wrangler.Wrangler, subFlags 
 	if err != nil {
 		return err
 	}
-	tt, err := topoproto.ParseTabletType(*tabletType)
-	if err != nil {
-		return err
-	}
 	tabletAlias, err := topoproto.ParseTabletAlias(subFlags.Arg(0))
 	if err != nil {
 		return err
@@ -363,24 +382,21 @@ func commandVtTabletCommit(ctx context.Context, wr *wrangler.Wrangler, subFlags 
 	if err != nil {
 		return err
 	}
-	ep, err := topo.TabletEndPoint(tabletInfo.Tablet)
-	if err != nil {
-		return fmt.Errorf("cannot get EndPoint from tablet record: %v", err)
-	}
 
-	conn, err := tabletconn.GetDialer()(ctx, ep, *keyspace, *shard, tt, *connectTimeout)
+	conn, err := tabletconn.GetDialer()(tabletInfo.Tablet, *connectTimeout)
 	if err != nil {
 		return fmt.Errorf("cannot connect to tablet %v: %v", tabletAlias, err)
 	}
 	defer conn.Close()
 
-	return conn.Commit(ctx, transactionID)
+	return conn.Commit(ctx, &querypb.Target{
+		Keyspace:   tabletInfo.Tablet.Keyspace,
+		Shard:      tabletInfo.Tablet.Shard,
+		TabletType: tabletInfo.Tablet.Type,
+	}, transactionID)
 }
 
 func commandVtTabletRollback(ctx context.Context, wr *wrangler.Wrangler, subFlags *flag.FlagSet, args []string) error {
-	keyspace := subFlags.String("keyspace", "", "keyspace the tablet belongs to")
-	shard := subFlags.String("shard", "", "shard the tablet belongs to")
-	tabletType := subFlags.String("tablet_type", "unknown", "tablet type we expect from the tablet (use unknown to use sessionId)")
 	connectTimeout := subFlags.Duration("connect_timeout", 30*time.Second, "Connection timeout for vttablet client")
 	if err := subFlags.Parse(args); err != nil {
 		return err
@@ -392,10 +408,6 @@ func commandVtTabletRollback(ctx context.Context, wr *wrangler.Wrangler, subFlag
 	if err != nil {
 		return err
 	}
-	tt, err := topoproto.ParseTabletType(*tabletType)
-	if err != nil {
-		return err
-	}
 	tabletAlias, err := topoproto.ParseTabletAlias(subFlags.Arg(0))
 	if err != nil {
 		return err
@@ -404,18 +416,18 @@ func commandVtTabletRollback(ctx context.Context, wr *wrangler.Wrangler, subFlag
 	if err != nil {
 		return err
 	}
-	ep, err := topo.TabletEndPoint(tabletInfo.Tablet)
-	if err != nil {
-		return fmt.Errorf("cannot get EndPoint from tablet record: %v", err)
-	}
 
-	conn, err := tabletconn.GetDialer()(ctx, ep, *keyspace, *shard, tt, *connectTimeout)
+	conn, err := tabletconn.GetDialer()(tabletInfo.Tablet, *connectTimeout)
 	if err != nil {
 		return fmt.Errorf("cannot connect to tablet %v: %v", tabletAlias, err)
 	}
 	defer conn.Close()
 
-	return conn.Rollback(ctx, transactionID)
+	return conn.Rollback(ctx, &querypb.Target{
+		Keyspace:   tabletInfo.Tablet.Keyspace,
+		Shard:      tabletInfo.Tablet.Shard,
+		TabletType: tabletInfo.Tablet.Type,
+	}, transactionID)
 }
 
 func commandVtTabletStreamHealth(ctx context.Context, wr *wrangler.Wrangler, subFlags *flag.FlagSet, args []string) error {
@@ -436,25 +448,19 @@ func commandVtTabletStreamHealth(ctx context.Context, wr *wrangler.Wrangler, sub
 		return err
 	}
 
-	ep, err := topo.TabletEndPoint(tabletInfo.Tablet)
-	if err != nil {
-		return fmt.Errorf("cannot get EndPoint from tablet record: %v", err)
-	}
-
-	// pass in a non-UNKNOWN tablet type to not use sessionId
-	conn, err := tabletconn.GetDialer()(ctx, ep, "", "", topodatapb.TabletType_MASTER, *connectTimeout)
+	conn, err := tabletconn.GetDialer()(tabletInfo.Tablet, *connectTimeout)
 	if err != nil {
 		return fmt.Errorf("cannot connect to tablet %v: %v", tabletAlias, err)
 	}
 
-	stream, errFunc, err := conn.StreamHealth(ctx)
+	stream, err := conn.StreamHealth(ctx)
 	if err != nil {
 		return err
 	}
 	for i := 0; i < *count; i++ {
-		shr, ok := <-stream
-		if !ok {
-			return fmt.Errorf("stream ended early: %v", errFunc())
+		shr, err := stream.Recv()
+		if err != nil {
+			return fmt.Errorf("stream ended early: %v", err)
 		}
 		data, err := json.Marshal(shr)
 		if err != nil {
@@ -464,4 +470,40 @@ func commandVtTabletStreamHealth(ctx context.Context, wr *wrangler.Wrangler, sub
 		}
 	}
 	return nil
+}
+
+// loggerWriter turns a Logger into a Writer by decorating it with a Write()
+// method that sends everything to Logger.Printf().
+type loggerWriter struct {
+	logutil.Logger
+}
+
+func (lw loggerWriter) Write(p []byte) (int, error) {
+	lw.Logger.Printf("%s", p)
+	return len(p), nil
+}
+
+// printQueryResult will pretty-print a QueryResult to the logger.
+func printQueryResult(writer io.Writer, qr *sqltypes.Result) {
+	table := tablewriter.NewWriter(writer)
+	table.SetAutoFormatHeaders(false)
+
+	// Make header.
+	header := make([]string, 0, len(qr.Fields))
+	for _, field := range qr.Fields {
+		header = append(header, field.Name)
+	}
+	table.SetHeader(header)
+
+	// Add rows.
+	for _, row := range qr.Rows {
+		vals := make([]string, 0, len(row))
+		for _, val := range row {
+			vals = append(vals, val.String())
+		}
+		table.Append(vals)
+	}
+
+	// Print table.
+	table.Render()
 }

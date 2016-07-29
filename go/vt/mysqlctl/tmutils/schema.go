@@ -25,6 +25,18 @@ const (
 	TableView = "VIEW"
 )
 
+// TableDefinitionGetColumn returns the index of a column inside a
+// TableDefinition.
+func TableDefinitionGetColumn(td *tabletmanagerdatapb.TableDefinition, name string) (index int, ok bool) {
+	lowered := strings.ToLower(name)
+	for i, n := range td.Columns {
+		if lowered == strings.ToLower(n) {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
 // TableDefinitions is a list of TableDefinition, for sorting
 type TableDefinitions []*tabletmanagerdatapb.TableDefinition
 
@@ -238,12 +250,4 @@ type SchemaChange struct {
 	AllowReplication bool
 	BeforeSchema     *tabletmanagerdatapb.SchemaDefinition
 	AfterSchema      *tabletmanagerdatapb.SchemaDefinition
-}
-
-// SchemaChangeResult contains before and after table schemas for
-// a schema change sql.
-// It should not be sent over the wire, it's just a set of parameters.
-type SchemaChangeResult struct {
-	BeforeSchema *tabletmanagerdatapb.SchemaDefinition
-	AfterSchema  *tabletmanagerdatapb.SchemaDefinition
 }

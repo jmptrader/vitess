@@ -1,7 +1,3 @@
-// Package test contains utilities to test topo.Impl
-// implementations. If you are testing your implementation, you will
-// want to call CheckAll in your test method. For an example, look at
-// the tests in github.com/youtube/vitess/go/vt/zktopo.
 package test
 
 import (
@@ -28,8 +24,9 @@ func shardEqual(left, right *topodatapb.Shard) (bool, error) {
 	return string(lj) == string(rj), nil
 }
 
-// CheckShard verifies the Shard operations work correctly
-func CheckShard(ctx context.Context, t *testing.T, ts topo.Impl) {
+// checkShard verifies the Shard operations work correctly
+func checkShard(t *testing.T, ts topo.Impl) {
+	ctx := context.Background()
 	tts := topo.Server{Impl: ts}
 
 	if err := ts.CreateKeyspace(ctx, "test_keyspace", &topodatapb.Keyspace{}); err != nil {
@@ -77,19 +74,19 @@ func CheckShard(ctx context.Context, t *testing.T, ts topo.Impl) {
 	shard.MasterAlias = master
 	shard.KeyRange = newKeyRange("b0-c0")
 	shard.ServedTypes = []*topodatapb.Shard_ServedType{
-		&topodatapb.Shard_ServedType{
+		{
 			TabletType: topodatapb.TabletType_MASTER,
 		},
-		&topodatapb.Shard_ServedType{
+		{
 			TabletType: topodatapb.TabletType_REPLICA,
 			Cells:      []string{"c1"},
 		},
-		&topodatapb.Shard_ServedType{
+		{
 			TabletType: topodatapb.TabletType_RDONLY,
 		},
 	}
 	shard.SourceShards = []*topodatapb.Shard_SourceShard{
-		&topodatapb.Shard_SourceShard{
+		{
 			Uid:      1,
 			Keyspace: "source_ks",
 			Shard:    "b8-c0",
@@ -98,12 +95,12 @@ func CheckShard(ctx context.Context, t *testing.T, ts topo.Impl) {
 		},
 	}
 	shard.TabletControls = []*topodatapb.Shard_TabletControl{
-		&topodatapb.Shard_TabletControl{
+		{
 			TabletType:        topodatapb.TabletType_MASTER,
 			Cells:             []string{"c1", "c2"},
 			BlacklistedTables: []string{"black1", "black2"},
 		},
-		&topodatapb.Shard_TabletControl{
+		{
 			TabletType:          topodatapb.TabletType_REPLICA,
 			DisableQueryService: true,
 		},
@@ -113,13 +110,14 @@ func CheckShard(ctx context.Context, t *testing.T, ts topo.Impl) {
 	}
 
 	other := &topodatapb.TabletAlias{Cell: "ny", Uid: 82873}
-	_, err = tts.UpdateShardFields(ctx, "test_keyspace", "b0-c0", func(shard *topodatapb.Shard) error {
-		shard.MasterAlias = other
+	_, err = tts.UpdateShardFields(ctx, "test_keyspace", "b0-c0", func(si *topo.ShardInfo) error {
+		si.MasterAlias = other
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("UpdateShardFields error: %v", err)
 	}
+
 	s, _, err := ts.GetShard(ctx, "test_keyspace", "b0-c0")
 	if err != nil {
 		t.Fatalf("GetShard: %v", err)
@@ -127,12 +125,11 @@ func CheckShard(ctx context.Context, t *testing.T, ts topo.Impl) {
 	if *s.MasterAlias != *other {
 		t.Fatalf("shard.MasterAlias = %v, want %v", s.MasterAlias, other)
 	}
-	_, err = tts.UpdateShardFields(ctx, "test_keyspace", "b0-c0", func(shard *topodatapb.Shard) error {
-		shard.MasterAlias = master
-		return nil
-	})
+
+	// unconditional shard update
+	_, err = ts.UpdateShard(ctx, "test_keyspace", "b0-c0", shard, -1)
 	if err != nil {
-		t.Fatalf("UpdateShardFields error: %v", err)
+		t.Fatalf("UpdateShard(-1) error: %v", err)
 	}
 
 	updatedShard, _, err := ts.GetShard(ctx, "test_keyspace", "b0-c0")

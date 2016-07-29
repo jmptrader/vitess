@@ -6,6 +6,10 @@
 package tabletservermock
 
 import (
+	"sync"
+
+	"golang.org/x/net/context"
+
 	"github.com/youtube/vitess/go/vt/dbconfigs"
 	"github.com/youtube/vitess/go/vt/mysqlctl"
 	querypb "github.com/youtube/vitess/go/vt/proto/query"
@@ -17,45 +21,59 @@ import (
 // BroadcastData is used by the mock Controller to send data
 // so the tests can check what was sent.
 type BroadcastData struct {
-	// TERTimestamp stores the last broadcast timestamp
+	// TERTimestamp stores the last broadcast timestamp.
 	TERTimestamp int64
 
-	// RealtimeStats stores the last broadcast stats
+	// RealtimeStats stores the last broadcast stats.
 	RealtimeStats querypb.RealtimeStats
+
+	// Serving contains the QueryServiceEnabled flag
+	Serving bool
+}
+
+// StateChange stores the state the controller changed to.
+// Tests can use this to verify that the state changed as expected.
+type StateChange struct {
+	// Serving is true when the QueryService is enabled.
+	Serving bool
+	// TabletType is the type of tablet e.g. REPLICA.
+	TabletType topodatapb.TabletType
 }
 
 // Controller is a mock tabletserver.Controller
 type Controller struct {
-	// CurrentTarget stores the last known target
+	// BroadcastData is a channel where we send BroadcastHealth data.
+	// Set at construction time.
+	BroadcastData chan *BroadcastData
+
+	// StateChanges has the list of state changes done by SetServingType().
+	// Set at construction time.
+	StateChanges chan *StateChange
+
+	// CurrentTarget stores the last known target.
 	CurrentTarget querypb.Target
 
-	// QueryServiceEnabled is a state variable
-	QueryServiceEnabled bool
-
-	// InitDBConfigError is the return value for InitDBConfig
-	InitDBConfigError error
-
-	// SetServingTypeError is the return value for SetServingType
+	// SetServingTypeError is the return value for SetServingType.
 	SetServingTypeError error
 
-	// IsHealthy is the return value for IsHealthy
-	IsHealthyError error
+	// mu protects the next fields in this structure. They are
+	// accessed by both the methods in this interface, and the
+	// background health check.
+	mu sync.Mutex
 
-	// ReloadSchemaCount counts how many times ReloadSchema was called
-	ReloadSchemaCount int
+	// QueryServiceEnabled is a state variable.
+	queryServiceEnabled bool
 
-	// BroadcastData is a channel where we send BroadcastHealth data
-	BroadcastData chan *BroadcastData
+	// isInLameduck is a state variable.
+	isInLameduck bool
 }
 
 // NewController returns a mock of tabletserver.Controller
 func NewController() *Controller {
 	return &Controller{
-		QueryServiceEnabled: false,
-		InitDBConfigError:   nil,
-		IsHealthyError:      nil,
-		ReloadSchemaCount:   0,
+		queryServiceEnabled: false,
 		BroadcastData:       make(chan *BroadcastData, 10),
+		StateChanges:        make(chan *StateChange, 10),
 	}
 }
 
@@ -68,38 +86,51 @@ func (tqsc *Controller) AddStatusPart() {
 }
 
 // InitDBConfig is part of the tabletserver.Controller interface
-func (tqsc *Controller) InitDBConfig(target querypb.Target, dbConfigs dbconfigs.DBConfigs, schemaOverrides []tabletserver.SchemaOverride, mysqld mysqlctl.MysqlDaemon) error {
-	if tqsc.InitDBConfigError == nil {
-		tqsc.CurrentTarget = target
-		tqsc.QueryServiceEnabled = true
-	} else {
-		tqsc.QueryServiceEnabled = false
-	}
-	return tqsc.InitDBConfigError
+func (tqsc *Controller) InitDBConfig(target querypb.Target, dbConfigs dbconfigs.DBConfigs, mysqld mysqlctl.MysqlDaemon) error {
+	tqsc.mu.Lock()
+	defer tqsc.mu.Unlock()
+
+	tqsc.CurrentTarget = target
+	return nil
 }
 
 // SetServingType is part of the tabletserver.Controller interface
-func (tqsc *Controller) SetServingType(tabletType topodatapb.TabletType, serving bool, alsoAllow []topodatapb.TabletType) error {
+func (tqsc *Controller) SetServingType(tabletType topodatapb.TabletType, serving bool, alsoAllow []topodatapb.TabletType) (bool, error) {
+	tqsc.mu.Lock()
+	defer tqsc.mu.Unlock()
+
+	stateChanged := false
 	if tqsc.SetServingTypeError == nil {
+		stateChanged = tqsc.queryServiceEnabled != serving || tqsc.CurrentTarget.TabletType != tabletType
 		tqsc.CurrentTarget.TabletType = tabletType
-		tqsc.QueryServiceEnabled = serving
+		tqsc.queryServiceEnabled = serving
 	}
-	return tqsc.SetServingTypeError
+	if stateChanged {
+		tqsc.StateChanges <- &StateChange{
+			Serving:    serving,
+			TabletType: tabletType,
+		}
+	}
+	tqsc.isInLameduck = false
+	return stateChanged, tqsc.SetServingTypeError
 }
 
 // IsServing is part of the tabletserver.Controller interface
 func (tqsc *Controller) IsServing() bool {
-	return tqsc.QueryServiceEnabled
+	tqsc.mu.Lock()
+	defer tqsc.mu.Unlock()
+
+	return tqsc.queryServiceEnabled
 }
 
 // IsHealthy is part of the tabletserver.Controller interface
 func (tqsc *Controller) IsHealthy() error {
-	return tqsc.IsHealthyError
+	return nil
 }
 
 // ReloadSchema is part of the tabletserver.Controller interface
-func (tqsc *Controller) ReloadSchema() {
-	tqsc.ReloadSchemaCount++
+func (tqsc *Controller) ReloadSchema(ctx context.Context) error {
+	return nil
 }
 
 //ClearQueryPlanCache is part of the tabletserver.Controller interface
@@ -124,10 +155,35 @@ func (tqsc *Controller) QueryService() queryservice.QueryService {
 	return nil
 }
 
+// QueryServiceStats is part of the tabletserver.Controller interface
+func (tqsc *Controller) QueryServiceStats() *tabletserver.QueryServiceStats {
+	return nil
+}
+
 // BroadcastHealth is part of the tabletserver.Controller interface
 func (tqsc *Controller) BroadcastHealth(terTimestamp int64, stats *querypb.RealtimeStats) {
+	tqsc.mu.Lock()
+	defer tqsc.mu.Unlock()
+
 	tqsc.BroadcastData <- &BroadcastData{
 		TERTimestamp:  terTimestamp,
 		RealtimeStats: *stats,
+		Serving:       tqsc.queryServiceEnabled && (!tqsc.isInLameduck),
 	}
+}
+
+// EnterLameduck implements tabletserver.Controller.
+func (tqsc *Controller) EnterLameduck() {
+	tqsc.mu.Lock()
+	defer tqsc.mu.Unlock()
+
+	tqsc.isInLameduck = true
+}
+
+// SetQueryServiceEnabledForTests can set queryServiceEnabled in tests.
+func (tqsc *Controller) SetQueryServiceEnabledForTests(enabled bool) {
+	tqsc.mu.Lock()
+	defer tqsc.mu.Unlock()
+
+	tqsc.queryServiceEnabled = enabled
 }

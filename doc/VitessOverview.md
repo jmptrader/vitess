@@ -28,7 +28,7 @@ Vitess improves a vanilla MySQL implementation in several ways:
   <tbody>
   <tr>
     <td>Every MySQL connection has a memory overhead that ranges between 256KB and almost 3MB, depending on which MySQL release you're using. As your user base grows, you need to add RAM to support additional connections, but the RAM does not contribute to faster queries. In addition, there is a significant CPU cost associated with obtaining the connections.</td>
-    <td>Vitess' BSON-based protocol creates very lightweight connections that are around 32KB. Vitess' connection pooling feature uses Go's concurrency support to map these lightweight connections to a small pool of MySQL connections. As such, Vitess can easily handle thousands of connections.</td>
+    <td>Vitess' gRPC-based protocol creates very lightweight connections. Vitess' connection pooling feature uses Go's concurrency support to map these lightweight connections to a small pool of MySQL connections. As such, Vitess can easily handle thousands of connections.</td>
   </tr>
   <tr>
     <td>Poorly written queries, such as those that don't set a LIMIT, can negatively impact database performance for all users.</td>
@@ -86,7 +86,6 @@ If you're considering a NoSQL solution primarily because of concerns about the s
   * Connection pooling - Scale front-end connections while optimizing MySQL performance.
   * Query de-duping – Reuse results of an in-flight query for any identical requests received while the in-flight query was still executing.
   * Transaction manager – Limit number of concurrent transactions and manage deadlines to optimize overall throughput.
-  * Rowcache – Maintain a row-based cache (using memcached) to more efficiently field queries that require random access by primary key, very useful for OLTP workloads. (The MySQL buffer cache is optimized for range scans over indices and tables.). This can replace a custom caching layer implementation at the application layer.<br><br>
 
 * **Protection**
 
@@ -117,7 +116,7 @@ The Vitess platform consists of a number of server processes, command-line utili
 
 Depending on the current state of your application, you could arrive at a full Vitess implementation through a number of different process flows. For example, if you're building a service from scratch, your first step with Vitess would be to define your database topology. However, if you need to scale your existing database, you'd likely start by deploying a connection proxy.
 
-Vitess tools and servers are designed to help you whether you start with a complete fleet of databases or start small and scale over time. For smaller implementations, vttablet features like connection pooling and rowcache help you get more from your existing hardware. Vitess' automation tools then provide additional benefits for larger implementations.
+Vitess tools and servers are designed to help you whether you start with a complete fleet of databases or start small and scale over time. For smaller implementations, vttablet features like connection pooling and query rewriting help you get more from your existing hardware. Vitess' automation tools then provide additional benefits for larger implementations.
 
 The diagram below illustrates Vitess' components:
 

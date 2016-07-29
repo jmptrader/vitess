@@ -1,13 +1,13 @@
 package etcdtopo
 
 import (
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/vtgate/planbuilder"
+	"encoding/json"
+	"fmt"
+
 	"golang.org/x/net/context"
-	// vindexes needs to be imported so that they register
-	// themselves against vtgate/planbuilder. This will allow
-	// us to sanity check the schema being uploaded.
-	_ "github.com/youtube/vitess/go/vt/vtgate/vindexes"
+
+	vschemapb "github.com/youtube/vitess/go/vt/proto/vschema"
+	"github.com/youtube/vitess/go/vt/topo"
 )
 
 /*
@@ -15,31 +15,34 @@ This file contains the vschema management code for etcdtopo.Server
 */
 
 // SaveVSchema saves the JSON vschema into the topo.
-func (s *Server) SaveVSchema(ctx context.Context, vschema string) error {
-	_, err := planbuilder.NewSchema([]byte(vschema))
+func (s *Server) SaveVSchema(ctx context.Context, keyspace string, vschema *vschemapb.Keyspace) error {
+	data, err := json.MarshalIndent(vschema, "", "  ")
 	if err != nil {
 		return err
 	}
-
-	_, err = s.getGlobal().Set(vschemaPath, vschema, 0 /* ttl */)
+	_, err = s.getGlobal().Set(vschemaFilePath(keyspace), string(data), 0 /* ttl */)
 	if err != nil {
 		return convertError(err)
 	}
 	return nil
 }
 
-// GetVSchema fetches the JSON vschema from the topo.
-func (s *Server) GetVSchema(ctx context.Context) (string, error) {
-	resp, err := s.getGlobal().Get(vschemaPath, false /* sort */, false /* recursive */)
+// GetVSchema fetches the vschema from the topo.
+func (s *Server) GetVSchema(ctx context.Context, keyspace string) (*vschemapb.Keyspace, error) {
+	resp, err := s.getGlobal().Get(vschemaFilePath(keyspace), false /* sort */, false /* recursive */)
 	if err != nil {
 		err = convertError(err)
 		if err == topo.ErrNoNode {
-			return "{}", nil
+			return nil, topo.ErrNoNode
 		}
-		return "", err
+		return nil, err
 	}
 	if resp.Node == nil {
-		return "", ErrBadResponse
+		return nil, ErrBadResponse
 	}
-	return resp.Node.Value, nil
+	var vs vschemapb.Keyspace
+	if err := json.Unmarshal([]byte(resp.Node.Value), &vs); err != nil {
+		return nil, fmt.Errorf("bad vschema data (%v): %q", err, resp.Node.Value)
+	}
+	return &vs, nil
 }

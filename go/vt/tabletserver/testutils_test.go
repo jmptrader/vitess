@@ -17,6 +17,8 @@ import (
 	"github.com/youtube/vitess/go/vt/dbconfigs"
 	"github.com/youtube/vitess/go/vt/mysqlctl"
 	"github.com/youtube/vitess/go/vt/vttest/fakesqldb"
+
+	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
 )
 
 type dummyChecker struct {
@@ -61,48 +63,36 @@ func (util *testUtils) checkEqual(t *testing.T, expected interface{}, result int
 	}
 }
 
-func (util *testUtils) checkTabletErrorWithRecover(t *testing.T, tabletErrType int, tabletErrStr string) {
+func (util *testUtils) checkTabletErrorWithRecover(t *testing.T, tabletErrCode vtrpcpb.ErrorCode, tabletErrStr string) {
 	err := recover()
 	if err == nil {
 		t.Fatalf("should get error")
 	}
-	util.checkTabletError(t, err, tabletErrType, tabletErrStr)
+	util.checkTabletError(t, err, tabletErrCode, tabletErrStr)
 }
 
-func (util *testUtils) checkTabletError(t *testing.T, err interface{}, tabletErrType int, tabletErrStr string) {
+func (util *testUtils) checkTabletError(t *testing.T, err interface{}, tabletErrCode vtrpcpb.ErrorCode, tabletErrStr string) {
 	tabletError, ok := err.(*TabletError)
 	if !ok {
 		t.Fatalf("should return a TabletError, but got err: %v", err)
 	}
-	if tabletError.ErrorType != tabletErrType {
-		t.Fatalf("should return a TabletError with error type: %s", util.getTabletErrorString(tabletErrType))
+	if tabletError.ErrorCode != tabletErrCode {
+		t.Fatalf("got a TabletError with error code %s but wanted: %s", tabletError.ErrorCode, tabletErrCode)
 	}
 	if !strings.Contains(tabletError.Error(), tabletErrStr) {
 		t.Fatalf("expect the tablet error should contain string: '%s', but it does not. Got tablet error: '%s'", tabletErrStr, tabletError.Error())
 	}
 }
 
-func (util *testUtils) getTabletErrorString(tabletErrorType int) string {
-	switch tabletErrorType {
-	case ErrFail:
-		return "ErrFail"
-	case ErrRetry:
-		return "ErrRetry"
-	case ErrFatal:
-		return "ErrFatal"
-	case ErrTxPoolFull:
-		return "ErrTxPoolFull"
-	case ErrNotInTx:
-		return "ErrNotInTx"
-	}
-	return ""
-}
-
 func (util *testUtils) newMysqld(dbconfigs *dbconfigs.DBConfigs) mysqlctl.MysqlDaemon {
+	cnf := mysqlctl.NewMycnf(11111, 6802)
+	// Assigning ServerID to be different from tablet UID to make sure that there are no
+	// assumptions in the code that those IDs are the same.
+	cnf.ServerID = 22222
 	return mysqlctl.NewMysqld(
 		"",
 		"",
-		mysqlctl.NewMycnf(0, 6802),
+		cnf,
 		&dbconfigs.Dba,
 		&dbconfigs.App.ConnParams,
 		&dbconfigs.Repl,
@@ -125,11 +115,8 @@ func (util *testUtils) newQueryServiceConfig() Config {
 	config := DefaultQsConfig
 	config.StatsPrefix = fmt.Sprintf("Stats-%d-", randID)
 	config.DebugURLPrefix = fmt.Sprintf("/debug-%d-", randID)
-	config.RowCache.StatsPrefix = fmt.Sprintf("Stats-%d-", randID)
 	config.PoolNamePrefix = fmt.Sprintf("Pool-%d-", randID)
 	config.StrictMode = true
-	config.RowCache.Binary = "ls"
-	config.RowCache.Connections = 100
 	config.EnablePublishStats = false
 	return config
 }
@@ -159,11 +146,9 @@ func newTestSchemaInfo(
 		queryCacheSize,
 		reloadTime,
 		idleTimeout,
-		newTestSchemaInfoCachePool(enablePublishStats, queryServiceStats),
 		map[string]string{
 			debugQueryPlansKey: fmt.Sprintf("/debug/query_plans_%d", randID),
 			debugQueryStatsKey: fmt.Sprintf("/debug/query_stats_%d", randID),
-			debugTableStatsKey: fmt.Sprintf("/debug/table_stats_%d", randID),
 			debugSchemaKey:     fmt.Sprintf("/debug/schema_%d", randID),
 		},
 		enablePublishStats,

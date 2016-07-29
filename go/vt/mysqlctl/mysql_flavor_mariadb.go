@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/context"
+
 	log "github.com/golang/glog"
 	"github.com/youtube/vitess/go/sqldb"
 	"github.com/youtube/vitess/go/vt/mysqlctl/replication"
@@ -28,7 +30,7 @@ func (*mariaDB10) VersionMatch(version string) bool {
 
 // MasterPosition implements MysqlFlavor.MasterPosition().
 func (flavor *mariaDB10) MasterPosition(mysqld *Mysqld) (rp replication.Position, err error) {
-	qr, err := mysqld.FetchSuperQuery("SELECT @@GLOBAL.gtid_binlog_pos")
+	qr, err := mysqld.FetchSuperQuery(context.TODO(), "SELECT @@GLOBAL.gtid_binlog_pos")
 	if err != nil {
 		return rp, err
 	}
@@ -40,8 +42,13 @@ func (flavor *mariaDB10) MasterPosition(mysqld *Mysqld) (rp replication.Position
 
 // SlaveStatus implements MysqlFlavor.SlaveStatus().
 func (flavor *mariaDB10) SlaveStatus(mysqld *Mysqld) (replication.Status, error) {
-	fields, err := mysqld.fetchSuperQueryMap("SHOW ALL SLAVES STATUS")
+	fields, err := mysqld.fetchSuperQueryMap(context.TODO(), "SHOW ALL SLAVES STATUS")
 	if err != nil {
+		return replication.Status{}, err
+	}
+	if len(fields) == 0 {
+		// The query returned no data, meaning the server
+		// is not configured as a slave.
 		return replication.Status{}, ErrNotSlave
 	}
 	status := parseSlaveStatus(fields)
@@ -57,18 +64,22 @@ func (flavor *mariaDB10) SlaveStatus(mysqld *Mysqld) (replication.Status, error)
 //
 // Note: Unlike MASTER_POS_WAIT(), MASTER_GTID_WAIT() will continue waiting even
 // if the slave thread stops. If that is a problem, we'll have to change this.
-func (*mariaDB10) WaitMasterPos(mysqld *Mysqld, targetPos replication.Position, waitTimeout time.Duration) error {
+func (*mariaDB10) WaitMasterPos(ctx context.Context, mysqld *Mysqld, targetPos replication.Position) error {
 	var query string
-	if waitTimeout == 0 {
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout := deadline.Sub(time.Now())
+		if timeout <= 0 {
+			return fmt.Errorf("timed out waiting for position %v", targetPos)
+		}
+		query = fmt.Sprintf("SELECT MASTER_GTID_WAIT('%s', %.6f)", targetPos, timeout.Seconds())
+	} else {
 		// Omit the timeout to wait indefinitely. In MariaDB, a timeout of 0 means
 		// return immediately.
 		query = fmt.Sprintf("SELECT MASTER_GTID_WAIT('%s')", targetPos)
-	} else {
-		query = fmt.Sprintf("SELECT MASTER_GTID_WAIT('%s', %.6f)", targetPos, waitTimeout.Seconds())
 	}
 
 	log.Infof("Waiting for minimum replication position with query: %v", query)
-	qr, err := mysqld.FetchSuperQuery(query)
+	qr, err := mysqld.FetchSuperQuery(ctx, query)
 	if err != nil {
 		return fmt.Errorf("MASTER_GTID_WAIT() failed: %v", err)
 	}
@@ -86,7 +97,7 @@ func (*mariaDB10) WaitMasterPos(mysqld *Mysqld, targetPos replication.Position, 
 func (*mariaDB10) ResetReplicationCommands() []string {
 	return []string{
 		"STOP SLAVE",
-		"RESET SLAVE",
+		"RESET SLAVE ALL", // "ALL" makes it forget the master host:port.
 		"RESET MASTER",
 		"SET GLOBAL gtid_slave_pos = ''",
 	}
@@ -95,14 +106,26 @@ func (*mariaDB10) ResetReplicationCommands() []string {
 // PromoteSlaveCommands implements MysqlFlavor.PromoteSlaveCommands().
 func (*mariaDB10) PromoteSlaveCommands() []string {
 	return []string{
-		"RESET SLAVE",
+		"RESET SLAVE ALL", // "ALL" makes it forget the master host:port.
 	}
 }
 
 // SetSlavePositionCommands implements MysqlFlavor.
 func (*mariaDB10) SetSlavePositionCommands(pos replication.Position) ([]string, error) {
 	return []string{
+		// RESET MASTER will clear out gtid_binlog_pos,
+		// which then guarantees that gtid_current_pos = gtid_slave_pos,
+		// since gtid_current_pos = MAX(gtid_binlog_pos, gtid_slave_pos).
+		// This also emptys the binlogs, which allows us to set gtid_binlog_state.
+		"RESET MASTER",
+		// Set gtid_slave_pos to tell the slave where to start replicating.
 		fmt.Sprintf("SET GLOBAL gtid_slave_pos = '%s'", pos),
+		// Set gtid_binlog_state so that if this server later becomes a master,
+		// it will know that it has seen everything up to and including 'pos'.
+		// Otherwise, if another slave asks this server to replicate starting at
+		// exactly 'pos', this server will throw an error when in gtid_strict_mode,
+		// since it doesn't see 'pos' in its binlog - it only has everything AFTER.
+		fmt.Sprintf("SET GLOBAL gtid_binlog_state = '%s'", pos),
 	}, nil
 }
 
@@ -110,7 +133,12 @@ func (*mariaDB10) SetSlavePositionCommands(pos replication.Position) ([]string, 
 func (*mariaDB10) SetMasterCommands(params *sqldb.ConnParams, masterHost string, masterPort int, masterConnectRetry int) ([]string, error) {
 	// Make CHANGE MASTER TO command.
 	args := changeMasterArgs(params, masterHost, masterPort, masterConnectRetry)
-	args = append(args, "MASTER_USE_GTID = slave_pos")
+	// MASTER_USE_GTID = current_pos means it will request binlogs starting at
+	// MAX(master position, slave position), which handles the case where a
+	// demoted master is being converted back into a slave. In that case, the
+	// slave position might be behind the master position, since it stopped
+	// updating when the server was promoted to master.
+	args = append(args, "MASTER_USE_GTID = current_pos")
 	changeMasterTo := "CHANGE MASTER TO\n  " + strings.Join(args, ",\n  ")
 
 	return []string{changeMasterTo}, nil
